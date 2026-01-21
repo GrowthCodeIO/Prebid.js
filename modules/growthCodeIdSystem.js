@@ -67,6 +67,10 @@ export const growthCodeIdSubmodule = {
       ids = ids.concat(data)
     }
 
+    if (typeof configParams.eidsFunction === 'function') {
+      ids = ids.concat(configParams.eidsFunction());
+    }
+
     return {id: ids}
   },
 
