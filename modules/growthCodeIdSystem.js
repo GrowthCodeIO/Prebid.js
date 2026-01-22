@@ -28,6 +28,12 @@ export const growthCodeIdSubmodule = {
    */
   name: MODULE_NAME,
   /**
+   * treat growthCodeId values as already-formed EIDs
+   */
+  eids: {
+    growthCodeId: (values) => values
+  },
+  /**
    * decode the stored id value for passing to bid requests
    * @function
    * @param {{string}} value
