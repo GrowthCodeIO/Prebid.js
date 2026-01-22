@@ -28,6 +28,12 @@ export const growthCodeIdSubmodule = {
    */
   name: MODULE_NAME,
   /**
+   * treat growthCodeId values as already-formed EIDs
+   */
+  eids: {
+    growthCodeId: (values) => values
+  },
+  /**
    * decode the stored id value for passing to bid requests
    * @function
    * @param {{string}} value
@@ -65,6 +71,10 @@ export const growthCodeIdSubmodule = {
     if (additionalEids !== null) {
       const data = JSON.parse(additionalEids)
       ids = ids.concat(data)
+    }
+
+    if (typeof configParams.eidsFunction === 'function') {
+      ids = ids.concat(configParams.eidsFunction());
     }
 
     return {id: ids}

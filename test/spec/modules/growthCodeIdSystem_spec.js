@@ -69,6 +69,20 @@ describe('growthCodeIdSystem', () => {
     expect(ids).to.deep.equal(JSON.parse(GCID_EID));
   });
 
+  it('test return of the GCID and EIDs from eidsFunction', function () {
+    const extraEids = [{source: 'example.com', uids: [{id: 'func-id', atype: 1}]}];
+    const ids = growthCodeIdSubmodule.getId({params: {
+      eidsFunction: () => extraEids,
+    }});
+
+    expect(ids).to.deep.equal({
+      id: [
+        {source: 'growthcode.io', uids: [{atype: 3, id: GCID}]},
+        ...extraEids
+      ]
+    });
+  });
+
   it('test decode function)', function () {
     let ids;
     ids = growthCodeIdSubmodule.decode(GCID, {params: {

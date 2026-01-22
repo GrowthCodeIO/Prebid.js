@@ -19,6 +19,9 @@ pbjs.setConfig({
       name: 'growthCodeId',
       params: {
           customerEids: 'customerEids',
+          eidsFunction: () => ([
+            {source: 'example.com', uids: [{id: 'func-id-123', atype: 1}]}
+          ])
       }
     }]
   }
@@ -52,4 +55,18 @@ Below is an example of the EIDs stored in Local Store (customerEids)
       ]
    }
 ]
+```
+
+## Testing
+
+Run the module unit tests:
+
+```
+npx gulp test --nolint --file test/spec/modules/growthCodeIdSystem_spec.js
+```
+
+Run the userId integration tests (optional):
+
+```
+npx gulp test --nolint --file test/spec/modules/userId_spec.js
 ```
