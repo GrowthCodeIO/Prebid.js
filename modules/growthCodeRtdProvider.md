@@ -2,10 +2,11 @@
 
 The [GrowthCode](https://growthcode.io) real-time data module in Prebid enables publishers to fully 
 leverage the potential of their first-party audiences and contextual data. 
-With an integrated cookieless GrowthCode identity, this module offers real-time 
-contextual and audience segmentation (IAB Taxonomy 2.2, cattax: 6) capabilities, and HEMs that can seamlessly 
-integrate into your existing Prebid deployment, making it easy to maximize 
-your advertising strategies.
+
+This module reads the EID blob from localStorage (populated by the GrowthCode 
+pixel via `/v4/sync`) and injects all resolved universal IDs into the Prebid 
+`ortb2.user.eids` array. Supported IDs include GCID, UID2, ID5, Criteo, 
+Xandr, TradeDesk, Panorama, and 25+ additional providers.
 
 ## Building Prebid with GrowthCode Support
 
@@ -41,8 +42,14 @@ pbjs.setConfig(
 | name                             | String  | Real time data module name                                                | Always 'growthCodeRtd'             |
 | waitForIt                        | Boolean | Required to ensure that the auction is delayed until prefetch is complete | Optional. Defaults to false |
 | params                           | Object  |                                                                           |                             |
-| params.pid                       | String  | This is the Parter ID value obtained from GrowthCode                      | `TEST01`                    |
-| params.url                       | String  | Custom URL for server                                                     | Optional                    |
+| params.pid                       | String  | This is the Partner ID value obtained from GrowthCode                     | `TEST01`                    |
+
+### How It Works
+
+1. The GrowthCode pixel (`gc_superscript`) calls `/v4/sync` and writes the EID blob to `localStorage['gceb']`
+2. At auction time, this RTD module reads `gceb` from localStorage
+3. Parsed EIDs are injected into `ortb2.user.eids` for all bidders
+4. No server call is needed — all data is already available locally
 
 ## Testing
 
