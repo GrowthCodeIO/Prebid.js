@@ -41,7 +41,7 @@ function tryParse(data) {
  * @returns {boolean}
  */
 function init(config, userConsent) {
-  logMessage(LOG_PREFIX + 'Init');
+  // logMessage(LOG_PREFIX + 'Init');
 
   if (config == null) {
     return false;
