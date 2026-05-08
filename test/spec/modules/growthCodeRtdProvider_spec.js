@@ -51,7 +51,7 @@ describe('growthCodeRtdProvider', function() {
   });
 
   describe('getBidRequestData', function() {
-    it('reads gceb from localStorage and injects EIDs into ortb2.user.eids', function (done) {
+    it('reads gceb from localStorage and injects EIDs into ortb2.user.ext.eids', function (done) {
       growthCodeRtdProvider.init(sampleConfig, null);
       getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
 
@@ -64,7 +64,7 @@ describe('growthCodeRtdProvider', function() {
       };
 
       growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
-        const userEids = bidConfig.ortb2Fragments.global.user.eids;
+        const userEids = bidConfig.ortb2Fragments.global.user.ext.eids;
         expect(userEids).to.have.length(3);
         expect(userEids[0].source).to.equal('growthcode.io');
         expect(userEids[0].uids[0].id).to.equal('gc-test-id-123');
@@ -88,14 +88,16 @@ describe('growthCodeRtdProvider', function() {
         ortb2Fragments: {
           global: {
             user: {
-              eids: [existingEid]
+              ext: {
+                eids: [existingEid]
+              }
             }
           }
         }
       };
 
       growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
-        const userEids = bidConfig.ortb2Fragments.global.user.eids;
+        const userEids = bidConfig.ortb2Fragments.global.user.ext.eids;
         expect(userEids).to.have.length(3);
         expect(userEids[0].source).to.equal('growthcode.io');
         expect(userEids[0].uids[0].id).to.equal('gc-test-id-123');
@@ -139,7 +141,7 @@ describe('growthCodeRtdProvider', function() {
       const bidConfig = { ortb2Fragments: { global: {} } };
 
       growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
-        const userEids = bidConfig.ortb2Fragments.global.user.eids;
+        const userEids = bidConfig.ortb2Fragments.global.user.ext.eids;
         expect(userEids).to.have.length(1);
         expect(userEids[0].source).to.equal('growthcode.io');
         done();

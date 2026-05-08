@@ -66,7 +66,9 @@ function alterBidRequests(reqBidsConfigObj, callback, config, userConsent) {
       if (validEids.length > 0) {
         mergeDeep(reqBidsConfigObj.ortb2Fragments.global, {
           user: {
-            eids: validEids
+            ext: {
+              eids: validEids
+            }
           }
         });
         logMessage(LOG_PREFIX + 'Injected ' + validEids.length + ' EIDs into bidstream');
