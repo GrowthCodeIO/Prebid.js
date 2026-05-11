@@ -1,31 +1,23 @@
 /**
- * This module adds GrowthCode HEM and other Data to Bid Requests
+ * This module adds GrowthCode EIDs to Bid Requests by reading the EID blob
+ * from localStorage (populated by gc_superscript via /v4/sync).
  * @module modules/growthCodeRtdProvider
  */
 import { submodule } from '../src/hook.js'
 import { getStorageManager } from '../src/storageManager.js';
-import {
-  logMessage, logError, mergeDeep
-} from '../src/utils.js';
-import * as ajax from '../src/ajax.js';
+import { logMessage, logError, mergeDeep } from '../src/utils.js';
 import { MODULE_TYPE_RTD } from '../src/activities/modules.js';
-import {tryAppendQueryString} from '../libraries/urlUtils/urlUtils.js';
 
 const MODULE_NAME = 'growthCodeRtd';
 const LOG_PREFIX = 'GrowthCodeRtd: ';
-const ENDPOINT_URL = 'https://p2.gcprivacy.com/v2/rtd?'
-const RTD_EXPIRE_KEY = 'gc_rtd_expires_at'
-const RTD_CACHE_KEY = 'gc_rtd_items'
+const EID_BLOB_KEY = 'gceb';
 
 export const storage = getStorageManager({ moduleType: MODULE_TYPE_RTD, moduleName: MODULE_NAME });
-let items
 
 export const growthCodeRtdProvider = {
   name: MODULE_NAME,
   init: init,
   getBidRequestData: alterBidRequests,
-  addData: addData,
-  callServer: callServer
 };
 
 /**
@@ -49,86 +41,39 @@ function tryParse(data) {
  * @returns {boolean}
  */
 function init(config, userConsent) {
-  logMessage(LOG_PREFIX + 'Init RTB');
+  // logMessage(LOG_PREFIX + 'Init');
 
   if (config == null) {
-    return false
-  }
-
-  const configParams = (config && config.params) || {};
-  const expiresAt = parseInt(storage.getDataFromLocalStorage(RTD_EXPIRE_KEY, null));
-
-  items = tryParse(storage.getDataFromLocalStorage(RTD_CACHE_KEY, null));
-
-  if (configParams.pid === undefined) {
-    return true; // Die gracefully
-  } else {
-    return callServer(configParams, items, expiresAt, userConsent);
-  }
-}
-function callServer(configParams, items, expiresAt, userConsent) {
-  // Expire Cache
-  const now = Math.trunc(Date.now() / 1000);
-  if ((!isNaN(expiresAt)) && (now > expiresAt)) {
-    expiresAt = NaN;
-    storage.removeDataFromLocalStorage(RTD_CACHE_KEY, null)
-    storage.removeDataFromLocalStorage(RTD_EXPIRE_KEY, null)
-  }
-  if ((items === null) && (isNaN(expiresAt))) {
-    const gcid = storage.getDataFromLocalStorage('gcid')
-
-    let url = configParams.url ? configParams.url : ENDPOINT_URL;
-    url = tryAppendQueryString(url, 'pid', configParams.pid);
-    url = tryAppendQueryString(url, 'u', window.location.href);
-    url = tryAppendQueryString(url, 'gcid', gcid);
-    if ((userConsent !== null) && (userConsent.gdpr !== null) && (userConsent.gdpr.consentString)) {
-      url = tryAppendQueryString(url, 'tcf', userConsent.gdpr.consentString)
-    }
-
-    ajax.ajaxBuilder()(url, {
-      success: response => {
-        const respJson = tryParse(response);
-        // If response is a valid json and should save is true
-        if (respJson && respJson.results >= 1) {
-          storage.setDataInLocalStorage(RTD_CACHE_KEY, JSON.stringify(respJson.items), null);
-          storage.setDataInLocalStorage(RTD_EXPIRE_KEY, respJson.expires_at, null)
-        } else {
-          storage.setDataInLocalStorage(RTD_EXPIRE_KEY, respJson.expires_at, null)
-        }
-      },
-      error: error => {
-        logError(LOG_PREFIX + 'ID fetch encountered an error', error);
-      }
-    }, undefined, {method: 'GET', withCredentials: true})
+    return false;
   }
 
   return true;
 }
 
-function addData(reqBidsConfigObj, items) {
-  let merge = false
-
-  for (let j = 0; j < items.length; j++) {
-    const item = items[j]
-    const data = JSON.parse(item.parameters);
-    if (item['attachment_point'] === 'data') {
-      mergeDeep(reqBidsConfigObj.ortb2Fragments.bidder, data)
-      merge = true
-    }
-  }
-  return merge
-}
-
 /**
- * Alter the Bid Request for additional information such as HEM or 3rd Party Ids
+ * Inject EIDs into ortb2.user.eids for all bidders
  * @param reqBidsConfigObj
  * @param callback
  * @param config
  * @param userConsent
  */
 function alterBidRequests(reqBidsConfigObj, callback, config, userConsent) {
-  if (items != null) {
-    addData(reqBidsConfigObj, items)
+  const eidBlob = storage.getDataFromLocalStorage(EID_BLOB_KEY, null);
+  if (eidBlob !== null) {
+    const parsed = tryParse(eidBlob);
+    if (parsed && Array.isArray(parsed)) {
+      const validEids = parsed.filter(eid => eid.source && eid.uids);
+      if (validEids.length > 0) {
+        mergeDeep(reqBidsConfigObj.ortb2Fragments.global, {
+          user: {
+            ext: {
+              eids: validEids
+            }
+          }
+        });
+        logMessage(LOG_PREFIX + 'Injected ' + validEids.length + ' EIDs into bidstream');
+      }
+    }
   }
   callback();
 }
