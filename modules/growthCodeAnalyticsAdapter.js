@@ -14,6 +14,7 @@ import { MODULE_TYPE_ANALYTICS } from '../src/activities/modules.js';
 const MODULE_NAME = 'growthCodeAnalytics';
 const DEFAULT_PID = 'INVALID_PID'
 const ENDPOINT_URL = 'https://analytics.gcprivacy.com/v3/pb/analytics'
+const ANALYTICS_SOURCE = 'prebid_module';
 
 export const storage = getStorageManager({ moduleType: MODULE_TYPE_ANALYTICS, moduleName: MODULE_NAME });
 
@@ -24,6 +25,7 @@ let pid = DEFAULT_PID;
 let url = ENDPOINT_URL;
 
 let eventQueue = [];
+let bidWonQueue = [];
 
 let startAuction = 0;
 let bidRequestTimeout = 0;
@@ -31,6 +33,14 @@ const analyticsType = 'endpoint';
 
 const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsType }), {
   track({ eventType, args }) {
+    if (eventType === EVENTS.BID_WON) {
+      const bid = args ? { ...args } : {};
+      delete bid.ad;
+      delete bid.adUrl;
+      queueBidWon(bid);
+      return;
+    }
+
     const eventData = args ? utils.deepClone(args) : {};
     let data = {};
     if (!trackEvents.includes(eventType)) return;
@@ -68,13 +78,6 @@ const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsTy
       case EVENTS.BID_RESPONSE: {
         data = eventData;
         delete data.ad;
-        break;
-      }
-
-      case EVENTS.BID_WON: {
-        data = eventData;
-        delete data.ad;
-        delete data.adUrl;
         break;
       }
 
@@ -134,7 +137,6 @@ growthCodeAnalyticsAdapter.enableAnalytics = function(conf = {}) {
 function logToServer() {
   if (pid === DEFAULT_PID) return;
   if (eventQueue.length >= 1) {
-    // Get the correct GCID
     const gcid = storage.getDataFromLocalStorage('gcid');
 
     const data = {
@@ -165,9 +167,67 @@ function sendEvent(event) {
   eventQueue.push(event);
   logInfo(MODULE_NAME + 'Analytics Event: ' + event);
 
-  if ((event.eventType === EVENTS.AUCTION_END) || (event.eventType === EVENTS.BID_WON)) {
+  if (event.eventType === EVENTS.AUCTION_END) {
     logToServer();
   }
+}
+
+function queueBidWon(bid) {
+  const eids = (bid.userIdAsEids || []).map(e => e.source);
+  const advertiserDomains = (bid.meta && Array.isArray(bid.meta.advertiserDomains))
+    ? bid.meta.advertiserDomains : [];
+
+  bidWonQueue.push({
+    _eids: eids,
+    timestamp: bid.responseTimestamp || Date.now(),
+    event: 'winningBid',
+    bidder: bid.bidderCode || '',
+    currency: bid.currency || '',
+    cpm: bid.cpm || 0,
+    auction_id: bid.auctionId || '',
+    ad_unit_code: bid.adUnitCode || '',
+    ad_id: bid.adId || '',
+    advertiser_domains: advertiserDomains
+  });
+
+  logBidWonToServer();
+}
+
+function logBidWonToServer() {
+  if (pid === DEFAULT_PID || bidWonQueue.length === 0) return;
+
+  const gcid = storage.getDataFromLocalStorage('gcid') || '';
+  if (!gcid) return;
+
+  const allEids = [...new Set(bidWonQueue.flatMap(e => e._eids))];
+  const events = bidWonQueue.map(({ _eids, ...entry }) => entry);
+
+  const payload = {
+    bucket_id: storage.getDataFromLocalStorage('gcABbucket') || '',
+    gctest: false,
+    ssp_count: allEids.length,
+    live_intent: allEids.includes('liveintent.com'),
+    pbjs_name: 'pbjs',
+    gc_session_id: sessionId,
+    gc_event_id: utils.generateUUID(),
+    have_hem: !!(storage.getDataFromLocalStorage('gc_h1') && storage.getDataFromLocalStorage('gc_h3')),
+    hem_source: storage.getDataFromLocalStorage('gc_hs') || '',
+    eids: allEids,
+    analytics_source: ANALYTICS_SOURCE,
+    events
+  };
+
+  const requestUrl = url +
+    '?gcid=' + encodeURIComponent(gcid) +
+    '&pid=' + encodeURIComponent(pid) +
+    '&u=' + encodeURIComponent(getRefererInfo().page || '');
+
+  ajax(requestUrl, {
+    success: () => logInfo(MODULE_NAME + ': analytics sent'),
+    error: (err) => logInfo(MODULE_NAME + ': analytics error: ' + err)
+  }, JSON.stringify(payload), { method: 'POST', withCredentials: true });
+
+  bidWonQueue = [];
 }
 
 adapterManager.registerAnalyticsAdapter({
