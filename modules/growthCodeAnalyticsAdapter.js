@@ -38,7 +38,6 @@ const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsTy
       delete bid.ad;
       delete bid.adUrl;
       queueBidWon(bid);
-      return;
     }
 
     const eventData = args ? utils.deepClone(args) : {};
@@ -81,6 +80,13 @@ const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsTy
         break;
       }
 
+      case EVENTS.BID_WON: {
+        data = eventData;
+        delete data.ad;
+        delete data.adUrl;
+        break;
+      }
+
       case EVENTS.BIDDER_DONE: {
         data = eventData;
         break;
@@ -115,6 +121,7 @@ const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsTy
 growthCodeAnalyticsAdapter.originEnableAnalytics = growthCodeAnalyticsAdapter.enableAnalytics;
 
 growthCodeAnalyticsAdapter.enableAnalytics = function(conf = {}) {
+  trackEvents = [];
   if (typeof conf.options === 'object') {
     if (conf.options.pid) {
       pid = conf.options.pid;
@@ -167,7 +174,7 @@ function sendEvent(event) {
   eventQueue.push(event);
   logInfo(MODULE_NAME + 'Analytics Event: ' + event);
 
-  if (event.eventType === EVENTS.AUCTION_END) {
+  if ((event.eventType === EVENTS.AUCTION_END) || (event.eventType === EVENTS.BID_WON)) {
     logToServer();
   }
 }

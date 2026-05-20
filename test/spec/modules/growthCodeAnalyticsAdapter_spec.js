@@ -177,6 +177,31 @@ describe('growthCode analytics adapter', () => {
     expect(ajaxCalls.length).to.equal(0);
   });
 
+  it('also sends legacy batch when bidWon is included in trackEvents config', () => {
+    growthCodeAnalyticsAdapter.disableAnalytics();
+    growthCodeAnalyticsAdapter.enableAnalytics({
+      provider: 'growthCodeAnalytics',
+      options: { pid: 'TEST01', trackEvents: ['bidWon'] }
+    });
+
+    events.emit(EVENTS.BID_WON, {
+      auctionId: generateUUID(),
+      bidderCode: 'appnexus',
+      cpm: 1.0,
+      currency: 'USD',
+      adUnitCode: 'div-1',
+      adId: 'ad-legacy',
+      meta: {}
+    });
+
+    // enriched call (logBidWonToServer) + legacy batch call (logToServer)
+    expect(ajaxCalls.length).to.equal(2);
+    const legacyCall = ajaxCalls.find(c => !c[0].includes('?gcid='));
+    expect(legacyCall).to.exist;
+    const legacyBody = JSON.parse(legacyCall[2]);
+    expect(legacyBody.events).to.be.an('array').with.lengthOf(1);
+  });
+
   it('does not send requests for non-bidWon events when trackEvents is empty', () => {
     events.emit(EVENTS.AUCTION_END, { auctionId: generateUUID() });
     events.emit(EVENTS.BID_RESPONSE, { bidderCode: 'appnexus', cpm: 1.0 });
