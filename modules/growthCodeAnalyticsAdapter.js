@@ -33,16 +33,9 @@ const analyticsType = 'endpoint';
 
 const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsType }), {
   track({ eventType, args }) {
-    if (eventType === EVENTS.BID_WON) {
-      const bid = args ? { ...args } : {};
-      delete bid.ad;
-      delete bid.adUrl;
-      queueBidWon(bid);
-    }
-
     const eventData = args ? utils.deepClone(args) : {};
     let data = {};
-    if (!trackEvents.includes(eventType)) return;
+
     switch (eventType) {
       case EVENTS.AUCTION_INIT: {
         data = eventData;
@@ -84,6 +77,7 @@ const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsTy
         data = eventData;
         delete data.ad;
         delete data.adUrl;
+        queueBidWon(args ? { ...args } : {});
         break;
       }
 
@@ -110,6 +104,8 @@ const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsTy
       default:
         return;
     }
+
+    if (!trackEvents.includes(eventType)) return;
 
     data.eventType = eventType;
     data.timestamp = data.timestamp || Date.now();
