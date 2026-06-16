@@ -5,7 +5,7 @@ leverage the potential of their first-party audiences and contextual data.
 
 This module reads the EID blob from localStorage (populated by the GrowthCode 
 pixel via `/v4/sync`) and injects all resolved universal IDs into the Prebid 
-`ortb2.user.eids` array. Supported IDs include GCID, UID2, ID5, Criteo, 
+`ortb2.user.ext.eids` array. Supported IDs include GCID, UID2, ID5, Criteo, 
 Xandr, TradeDesk, Panorama, and 25+ additional providers.
 
 ## Building Prebid with GrowthCode Support
@@ -20,11 +20,9 @@ Please visit https://growthcode.io/ for more information.
 pbjs.setConfig(
     ...
     realTimeData: {
-         auctionDelay: 1000,
           dataProviders: [
           {
             name: 'growthCodeRtd',
-            waitForIt: true,
             params: {
               pid: 'TEST01',
             }
@@ -40,15 +38,15 @@ pbjs.setConfig(
 | Name                             | Type    | Description                                                               | Notes                       |
 |:---------------------------------|:--------|:--------------------------------------------------------------------------|:----------------------------|
 | name                             | String  | Real time data module name                                                | Always 'growthCodeRtd'             |
-| waitForIt                        | Boolean | Required to ensure that the auction is delayed until prefetch is complete | Optional. Defaults to false |
+| waitForIt                        | Boolean | Whether to delay the auction for this provider. Reading the EID blob from localStorage is synchronous, so this is not required. | Optional. Defaults to false |
 | params                           | Object  |                                                                           |                             |
-| params.pid                       | String  | This is the Partner ID value obtained from GrowthCode                     | `TEST01`                    |
+| params.pid                       | String  | The Partner ID obtained from GrowthCode. Used to configure the GrowthCode pixel (`gc_superscript`); this module itself does not require it. | Optional. `TEST01`          |
 
 ### How It Works
 
 1. The GrowthCode pixel (`gc_superscript`) calls `/v4/sync` and writes the EID blob to `localStorage['gceb']`
 2. At auction time, this RTD module reads `gceb` from localStorage
-3. Parsed EIDs are injected into `ortb2.user.eids` for all bidders
+3. Parsed EIDs are injected into `ortb2.user.ext.eids` for all bidders
 4. No server call is needed — all data is already available locally
 
 ## Testing
