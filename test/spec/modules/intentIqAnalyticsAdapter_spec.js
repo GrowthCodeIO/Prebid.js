@@ -1,15 +1,16 @@
 import { expect } from "chai";
-import iiqAnalyticsAnalyticsAdapter from "modules/intentIqAnalyticsAdapter.js";
-import * as utils from "src/utils.js";
-import { server } from "test/mocks/xhr.js";
-import { EVENTS } from "src/constants.js";
-import * as events from "src/events.js";
-import sinon from "sinon";
-import {
+import iiqAnalyticsAnalyticsAdapter, {
   REPORTER_ID,
   preparePayload,
   restoreReportList,
-} from "../../../modules/intentIqAnalyticsAdapter.js";
+} from "modules/intentIqAnalyticsAdapter.js";
+import * as utils from "src/utils.js";
+import { server } from "test/mocks/xhr.js";
+import { config } from "src/config.js";
+import { EVENTS } from "src/constants.js";
+import * as events from "src/events.js";
+import { getGlobal } from "../../../src/prebidGlobal.js";
+import sinon from "sinon";
 import {
   FIRST_PARTY_KEY,
   PREBID,
@@ -20,7 +21,7 @@ import {
 } from "../../../libraries/intentIqConstants/intentIqConstants.js";
 import * as detectBrowserUtils from "../../../libraries/intentIqUtils/detectBrowserUtils.js";
 import {
-  getReferrer,
+  getCurrentUrl,
   appendVrrefAndFui,
 } from "../../../libraries/intentIqUtils/getRefferer.js";
 import {
@@ -29,7 +30,10 @@ import {
   gdprDataHandler,
 } from "../../../src/consentHandler.js";
 
+let getConfigStub;
+let userIdConfigForTest;
 const partner = 10;
+const identityName = `iiq_identity_${partner}`;
 const defaultIdentityObject = {
   firstPartyData: {
     pcid: "f961ffb1-a0e1-4696-a9d2-a21d815bd344",
@@ -41,8 +45,7 @@ const defaultIdentityObject = {
     sCal: Date.now() - 36000,
     isOptedOut: false,
     pid: "profile",
-    dbsaved: "true",
-    spd: "spd",
+    dbsaved: "true"
   },
   partnerData: {
     abTestUuid: "abTestUuid",
@@ -53,7 +56,7 @@ const defaultIdentityObject = {
     profile: "profile",
     wsrvcll: true,
   },
-  clientHints: {
+  clientHints: JSON.stringify({
     0: '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
     1: "?0",
     2: '"macOS"',
@@ -62,8 +65,30 @@ const defaultIdentityObject = {
     6: '"15.6.1"',
     7: "?0",
     8: '"Chromium";v="142.0.7444.60", "Google Chrome";v="142.0.7444.60", "Not_A Brand";v="99.0.0.0"',
-  },
+  }),
 };
+const regionCases = [
+  {
+    name: 'default (no region)',
+    region: undefined,
+    expectedEndpoint: 'https://reports.intentiq.com/report'
+  },
+  {
+    name: 'apac',
+    region: 'apac',
+    expectedEndpoint: 'https://reports-apac.intentiq.com/report'
+  },
+  {
+    name: 'emea',
+    region: 'emea',
+    expectedEndpoint: 'https://reports-emea.intentiq.com/report'
+  },
+  {
+    name: 'gdpr',
+    region: 'gdpr',
+    expectedEndpoint: 'https://reports-gdpr.intentiq.com/report'
+  }
+];
 const version = VERSION;
 const REPORT_ENDPOINT = "https://reports.intentiq.com/report";
 const REPORT_ENDPOINT_GDPR = "https://reports-gdpr.intentiq.com/report";
@@ -75,14 +100,29 @@ const getDefaultConfig = () => {
   return {
     partner,
     manualWinReportEnabled: false,
+  };
+};
+
+const getUserConfigWithReportingServerAddress = () => [
+  {
+    'name': 'intentIqId',
+    'params': {
+      'partner': partner,
+      'unpack': null,
+    },
+    'storage': {
+      'type': 'html5',
+      'name': 'intentIqId',
+      'expires': 60,
+      'refreshInSeconds': 14400
+    }
   }
-}
+];
 
 const getWonRequest = () => ({
   bidderCode: "pubmatic",
   width: 728,
   height: 90,
-  statusMessage: "Bid available",
   adId: "23caeb34c55da51",
   requestId: "87615b45ca4973",
   transactionId: "5e69fd76-8c86-496a-85ce-41ae55787a50",
@@ -131,6 +171,11 @@ describe("IntentIQ tests all", function () {
   beforeEach(function () {
     logErrorStub = sinon.stub(utils, "logError");
     sinon.stub(events, "getEvents").returns([]);
+
+    if (config.getConfig && config.getConfig.restore) {
+      config.getConfig.restore();
+    }
+
     iiqAnalyticsAnalyticsAdapter.initOptions = {
       lsValueInitialized: false,
       partner: null,
@@ -151,11 +196,12 @@ describe("IntentIQ tests all", function () {
       iiqAnalyticsAnalyticsAdapter.track.restore();
     }
     sinon.spy(iiqAnalyticsAnalyticsAdapter, "track");
-    window[`iiq_identity_${partner}`] = defaultIdentityObject;
+    window[identityName] = utils.deepClone(defaultIdentityObject);
   });
 
   afterEach(function () {
     logErrorStub.restore();
+    if (getConfigStub && getConfigStub.restore) getConfigStub.restore();
     if (getWindowSelfStub) getWindowSelfStub.restore();
     if (getWindowTopStub) getWindowTopStub.restore();
     if (getWindowLocationStub) getWindowLocationStub.restore();
@@ -167,7 +213,7 @@ describe("IntentIQ tests all", function () {
     }
     localStorage.clear();
     server.reset();
-    delete window[`iiq_identity_${partner}`]
+    delete window[`iiq_identity_${partner}`];
   });
 
   it("should send POST request with payload in request body if reportMethod is POST", function () {
@@ -272,26 +318,52 @@ describe("IntentIQ tests all", function () {
     expect(payloadDecoded).to.have.property("adType", externalWinEvent.adType);
   });
 
-  it("should send report to report-gdpr address if gdpr is detected", function () {
-    const gppStub = sinon
-      .stub(gppDataHandler, "getConsentData")
-      .returns({ gppString: '{"key1":"value1","key2":"value2"}' });
-    const uspStub = sinon
-      .stub(uspDataHandler, "getConsentData")
-      .returns("1NYN");
-    const gdprStub = sinon
-      .stub(gdprDataHandler, "getConsentData")
-      .returns({ consentString: "gdprConsent" });
+  it("should get pos from pbjs.adUnits when BID_WON has no pos", function () {
+    const pbjs = getGlobal();
+    const prevAdUnits = pbjs.adUnits;
 
-    events.emit(EVENTS.BID_WON, getWonRequest());
+    pbjs.adUnits = Array.isArray(pbjs.adUnits) ? pbjs.adUnits : [];
+    pbjs.adUnits.push({ code: "myVideoAdUnit", mediaTypes: { video: { pos: 777 } } });
 
-    expect(server.requests.length).to.be.above(0);
+    enableAnalyticWithSpecialOptions({ manualWinReportEnabled: false });
+
+    events.emit(EVENTS.BID_WON, {
+      ...getWonRequest(),
+      adUnitCode: "myVideoAdUnit",
+      mediaType: "video"
+    });
+
     const request = server.requests[0];
+    const payloadEncoded = new URL(request.url).searchParams.get("payload");
+    const payloadDecoded = JSON.parse(atob(JSON.parse(payloadEncoded)[0]));
 
-    expect(request.url).to.contain(REPORT_ENDPOINT_GDPR);
-    gppStub.restore();
-    uspStub.restore();
-    gdprStub.restore();
+    expect(payloadDecoded.pos).to.equal(777);
+
+    pbjs.adUnits = prevAdUnits;
+  });
+
+  it("should get pos from reportExternalWin when present", function () {
+    enableAnalyticWithSpecialOptions({ manualWinReportEnabled: true });
+
+    const winPos = 999;
+
+    window[`intentIqAnalyticsAdapter_${partner}`].reportExternalWin({
+      adUnitCode: "myVideoAdUnit",
+      bidderCode: "appnexus",
+      cpm: 1.5,
+      currency: "USD",
+      mediaType: "video",
+      size: "300x250",
+      status: "rendered",
+      auctionId: "auc123",
+      pos: winPos
+    });
+
+    const request = server.requests[0];
+    const payloadEncoded = new URL(request.url).searchParams.get("payload");
+    const payloadDecoded = JSON.parse(atob(JSON.parse(payloadEncoded)[0]));
+
+    expect(payloadDecoded.pos).to.equal(winPos);
   });
 
   it("should initialize with default configurations", function () {
@@ -319,6 +391,9 @@ describe("IntentIQ tests all", function () {
   });
 
   it("should handle BID_WON event with default group configuration", function () {
+    const spdData = "server provided data";
+    const expectedSpdEncoded = encodeURIComponent(spdData);
+    window[identityName].partnerData.spd = spdData;
     const wonRequest = getWonRequest();
 
     events.emit(EVENTS.BID_WON, wonRequest);
@@ -331,7 +406,7 @@ describe("IntentIQ tests all", function () {
     const payload = encodeURIComponent(JSON.stringify([base64String]));
     const expectedUrl = appendVrrefAndFui(
       REPORT_ENDPOINT +
-        `?pid=${partner}&mct=1&iiqid=${defaultIdentityObject.firstPartyData.pcid}&agid=${REPORTER_ID}&jsver=${version}&source=pbjs&uh=&gdpr=0&spd=spd`,
+      `?pid=${partner}&mct=1&iiqid=${defaultIdentityObject.firstPartyData.pcid}&agid=${REPORTER_ID}&jsver=${version}&source=pbjs&uh=${encodeURIComponent(window[identityName].clientHints)}&gdpr=0&spd=${expectedSpdEncoded}`,
       iiqAnalyticsAnalyticsAdapter.initOptions.domainName
     );
     const urlWithPayload = expectedUrl + `&payload=${payload}`;
@@ -379,6 +454,48 @@ describe("IntentIQ tests all", function () {
     gdprStub.restore();
   });
 
+  it("should include tcfv (TCF API version) in report when TCF CMP is detected", function () {
+    const uspData = "1NYN";
+    const gppData = { gppString: '{"k":"v"}' };
+    const gdprData = { consentString: "gdprConsent", apiVersion: 2, gdprApplies: true };
+
+    const gppStub = sinon.stub(gppDataHandler, "getConsentData").returns(gppData);
+    const uspStub = sinon.stub(uspDataHandler, "getConsentData").returns(uspData);
+    const gdprStub = sinon.stub(gdprDataHandler, "getConsentData").returns(gdprData);
+
+    getWindowLocationStub = sinon
+      .stub(utils, "getWindowLocation")
+      .returns({ href: "http://localhost:9876/" });
+
+    events.emit(EVENTS.BID_WON, getWonRequest());
+
+    expect(server.requests.length).to.be.above(0);
+    const request = server.requests[0];
+    expect(request.url).to.contain(`&gdpr_consent=${encodeURIComponent(gdprData.consentString)}`);
+    expect(request.url).to.contain(`&gdpr=1`);
+    expect(request.url).to.contain(`&tcfv=2`);
+
+    gppStub.restore();
+    uspStub.restore();
+    gdprStub.restore();
+  });
+
+  regionCases.forEach(({ name, region, expectedEndpoint }) => {
+    it(`should send request to region-specific report endpoint when region is "${name}"`, function () {
+      userIdConfigForTest = getUserConfigWithReportingServerAddress();
+      getConfigStub = sinon.stub(config, "getConfig");
+      getConfigStub.withArgs("userSync.userIds").callsFake(() => userIdConfigForTest);
+
+      enableAnalyticWithSpecialOptions({ region });
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests.length).to.be.above(0);
+      const request = server.requests[0];
+      expect(request.url).to.contain(expectedEndpoint);
+    });
+  });
+
   it("should not send request if manualWinReportEnabled is true", function () {
     iiqAnalyticsAnalyticsAdapter.initOptions.manualWinReportEnabled = true;
     events.emit(EVENTS.BID_WON, getWonRequest());
@@ -417,7 +534,7 @@ describe("IntentIQ tests all", function () {
       .stub(utils, "getWindowLocation")
       .returns({ href: "http://localhost:9876/" });
 
-    const referrer = getReferrer();
+    const referrer = getCurrentUrl();
     expect(referrer).to.equal("http://localhost:9876/");
   });
 
@@ -428,7 +545,7 @@ describe("IntentIQ tests all", function () {
       .stub(utils, "getWindowTop")
       .returns({ location: { href: "http://example.com/" } });
 
-    const referrer = getReferrer();
+    const referrer = getCurrentUrl();
 
     expect(referrer).to.equal("http://example.com/");
   });
@@ -440,7 +557,7 @@ describe("IntentIQ tests all", function () {
       .stub(utils, "getWindowTop")
       .throws(new Error("Access denied"));
 
-    const referrer = getReferrer();
+    const referrer = getCurrentUrl();
     expect(referrer).to.equal("");
     expect(logErrorStub.calledOnce).to.be.true;
     expect(logErrorStub.firstCall.args[0]).to.contain(
@@ -451,7 +568,7 @@ describe("IntentIQ tests all", function () {
   it("should not send request if the browser is in blacklist (chrome)", function () {
     enableAnalyticWithSpecialOptions({
       browserBlackList: "ChrOmE"
-    })
+    });
     detectBrowserStub = sinon
       .stub(detectBrowserUtils, "detectBrowser")
       .returns("chrome");
@@ -464,7 +581,7 @@ describe("IntentIQ tests all", function () {
   it("should send request if the browser is not in blacklist (safari)", function () {
     enableAnalyticWithSpecialOptions({
       browserBlackList: "chrome,firefox"
-    })
+    });
 
     detectBrowserStub = sinon
       .stub(detectBrowserUtils, "detectBrowser")
@@ -520,12 +637,42 @@ describe("IntentIQ tests all", function () {
           destination: [0, 0, 1],
         },
       ]
-    })
+    });
 
     events.emit(EVENTS.BID_WON, getWonRequest());
 
     const request = server.requests[0];
     expect(request.url).to.include("general=Lee");
+  });
+
+  it("should include domainName in both query and payload when fullUrl is empty (cross-origin)", function () {
+    const domainName = "mydomain-frame.com";
+
+    enableAnalyticWithSpecialOptions({ domainName });
+
+    getWindowTopStub = sinon.stub(utils, "getWindowTop").throws(new Error("cross-origin"));
+
+    events.emit(EVENTS.BID_WON, getWonRequest());
+
+    const request = server.requests[0];
+
+    // Query contain vrref=domainName
+    const parsedUrl = new URL(request.url);
+    const vrrefParam = parsedUrl.searchParams.get("vrref");
+
+    // Payload contain vrref=domainName
+    const payloadEncoded = parsedUrl.searchParams.get("payload");
+    const payloadDecoded = JSON.parse(atob(JSON.parse(payloadEncoded)[0]));
+
+    expect(server.requests.length).to.be.above(0);
+    expect(vrrefParam).to.not.equal(null);
+    expect(decodeURIComponent(vrrefParam)).to.equal(domainName);
+    expect(parsedUrl.searchParams.get("fui")).to.equal("1");
+
+    expect(payloadDecoded).to.have.property("vrref");
+    expect(decodeURIComponent(payloadDecoded.vrref)).to.equal(domainName);
+
+    restoreReportList();
   });
 
   it("should not send additionalParams in report if value is too large", function () {
@@ -539,7 +686,7 @@ describe("IntentIQ tests all", function () {
           destination: [0, 0, 1],
         },
       ]
-    })
+    });
 
     events.emit(EVENTS.BID_WON, getWonRequest());
 
@@ -550,8 +697,9 @@ describe("IntentIQ tests all", function () {
   it("should include spd parameter from LS in report URL", function () {
     const spdObject = { foo: "bar", value: 42 };
     const expectedSpdEncoded = encodeURIComponent(JSON.stringify(spdObject));
-    window[`iiq_identity_${partner}`].firstPartyData.spd =
+    window[identityName].firstPartyData.spd =
       JSON.stringify(spdObject);
+    window[identityName].partnerData.spd = spdObject;
 
     getWindowLocationStub = sinon
       .stub(utils, "getWindowLocation")
@@ -568,7 +716,7 @@ describe("IntentIQ tests all", function () {
   it("should include spd parameter string from LS in report URL", function () {
     const spdData = "server provided data";
     const expectedSpdEncoded = encodeURIComponent(spdData);
-    window[`iiq_identity_${partner}`].firstPartyData.spd = spdData;
+    window[identityName].partnerData.spd = spdData;
 
     getWindowLocationStub = sinon
       .stub(utils, "getWindowLocation")
@@ -601,7 +749,7 @@ describe("IntentIQ tests all", function () {
 
       enableAnalyticWithSpecialOptions({
         gamObjectReference: gam
-      })
+      });
 
       // enable subscription by LS flag
       window[`iiq_identity_${partner}`].partnerData.gpr = true;
@@ -895,5 +1043,243 @@ describe("IntentIQ tests all", function () {
     expect(server.requests.length).to.be.above(0);
     // Verify that the group from options is used in the payload
     expect(decodedPayload).to.have.property("abGroup", providedGroup);
+  });
+
+  it("should include partnerAuctionId in query params and payload if provided by partner (GET)", function () {
+    const partnerAuctionId = "TEST-PAUCID-123";
+    enableAnalyticWithSpecialOptions({
+      manualWinReportEnabled: true,
+      reportMethod: "GET"
+    });
+
+    window[`intentIqAnalyticsAdapter_${partner}`].reportExternalWin({
+      cpm: 1,
+      currency: "USD",
+      adType: "banner",
+      partnerAuctionId
+    });
+
+    const request = server.requests[0];
+    const url = new URL(request.url);
+    const paucidParam = url.searchParams.get("paucid");
+    const payloadEncoded = url.searchParams.get("payload");
+    const payloadDecoded = JSON.parse(
+      atob(JSON.parse(payloadEncoded)[0])
+    );
+
+    expect(payloadEncoded).to.be.a('string');
+    expect(JSON.parse(paucidParam)).to.deep.equal([partnerAuctionId]);
+    expect(payloadDecoded.partnerAuctionId).to.equal(partnerAuctionId);
+  });
+
+  it("should include partnerAuctionId in query params and payload if provided by partner (POST)", function () {
+    const partnerAuctionId = "TEST-PAUCID-123";
+    enableAnalyticWithSpecialOptions({
+      manualWinReportEnabled: true,
+      reportMethod: "POST"
+    });
+
+    window[`intentIqAnalyticsAdapter_${partner}`].reportExternalWin({
+      cpm: 1,
+      currency: "USD",
+      adType: "banner",
+      partnerAuctionId
+    });
+
+    const request = server.requests[0];
+    const url = new URL(request.url);
+    const paucidParam = url.searchParams.get("paucid");
+    const bodyArray = JSON.parse(request.requestBody);
+    const payloadDecoded = JSON.parse(atob(bodyArray[0]));
+
+    expect(request.requestBody).to.be.a('string');
+    expect(JSON.parse(paucidParam)).to.deep.equal([partnerAuctionId]);
+    expect(payloadDecoded.partnerAuctionId).to.equal(partnerAuctionId);
+  });
+
+  it('should include abPercentage and userPercentage in payload when set in global identity object', function () {
+    window[identityName].abPercentage = 70;
+    window[identityName].userProvidedAbPercentage = 70;
+    events.emit(EVENTS.BID_WON, getWonRequest());
+
+    const request = server.requests[0];
+    const url = new URL(request.url);
+    const decoded = JSON.parse(atob(JSON.parse(url.searchParams.get('payload'))[0]));
+
+    expect(decoded.abPercentage).to.equal(70);
+    expect(decoded.userPercentage).to.equal(70);
+  });
+
+  it('should include abPercentage but not userPercentage in payload when abPercentage is set but user did not provide it', function () {
+    window[identityName].abPercentage = 95;
+    window[identityName].userProvidedAbPercentage = undefined;
+    events.emit(EVENTS.BID_WON, getWonRequest());
+
+    const request = server.requests[0];
+    const url = new URL(request.url);
+    const decoded = JSON.parse(atob(JSON.parse(url.searchParams.get('payload'))[0]));
+
+    expect(decoded.abPercentage).to.equal(95);
+    expect(decoded).to.not.have.property('userPercentage');
+  });
+
+  describe('BID_REQUESTED CMP mismatch detection', function () {
+    let refreshUserIdsStub;
+    let gppStub, uspStub, gdprStub;
+
+    beforeEach(function () {
+      getGlobal().refreshUserIds = sinon.stub();
+      refreshUserIdsStub = getGlobal().refreshUserIds;
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns(null);
+    });
+
+    afterEach(function () {
+      delete getGlobal().refreshUserIds;
+      gppStub.restore();
+      uspStub.restore();
+      gdprStub.restore();
+    });
+
+    it('should call refreshUserIds with intentIqId when gdprString changes', function () {
+      window[identityName].firstPartyData.gdprString = 'oldConsent';
+      gdprStub.returns({ consentString: 'newConsent', gdprApplies: true });
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.calledOnce).to.be.true;
+      expect(refreshUserIdsStub.calledWith({ submoduleNames: ['intentIqId'] })).to.be.true;
+    });
+
+    it('should call refreshUserIds when uspString changes from valid to another valid value', function () {
+      window[identityName].firstPartyData.uspString = '1YNN';
+      uspStub.returns('1NNN');
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.calledOnce).to.be.true;
+    });
+
+    it('should not call refreshUserIds when CMP data matches stored firstPartyData', function () {
+      window[identityName].firstPartyData.gdprString = 'sameConsent';
+      window[identityName].firstPartyData.gppString = null;
+      window[identityName].firstPartyData.uspString = null;
+      gdprStub.returns({ consentString: 'sameConsent', gdprApplies: true });
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.called).to.be.false;
+    });
+
+    it('should not call refreshUserIds when null and empty string are compared (both invalid)', function () {
+      window[identityName].firstPartyData.gdprString = null;
+      window[identityName].firstPartyData.gppString = null;
+      window[identityName].firstPartyData.uspString = null;
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.called).to.be.false;
+    });
+
+    it('should not call refreshUserIds when stored value is "undefined" string and current is null (both invalid)', function () {
+      window[identityName].firstPartyData.gdprString = '';
+      window[identityName].firstPartyData.gppString = 'undefined';
+      window[identityName].firstPartyData.uspString = 'undefined';
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.called).to.be.false;
+    });
+
+    it('should call refreshUserIds when valid gdprString is replaced by null (invalid)', function () {
+      window[identityName].firstPartyData.gdprString = 'validConsent';
+      window[identityName].firstPartyData.gppString = null;
+      window[identityName].firstPartyData.uspString = null;
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.calledOnce).to.be.true;
+    });
+
+    it('should not call refreshUserIds when firstPartyData is absent in global object', function () {
+      delete window[identityName].firstPartyData;
+
+      events.emit(EVENTS.BID_REQUESTED);
+
+      expect(refreshUserIdsStub.called).to.be.false;
+    });
+  });
+
+  describe('constructFullUrl CMP isValidValue filtering', function () {
+    let gppStub, uspStub, gdprStub;
+
+    afterEach(function () {
+      if (gppStub) gppStub.restore();
+      if (uspStub) uspStub.restore();
+      if (gdprStub) gdprStub.restore();
+    });
+
+    it('should not include us_privacy when uspString is null', function () {
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns(null);
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns(null);
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests[0].url).to.not.include('us_privacy');
+    });
+
+    it('should not include us_privacy when uspString is the string "undefined"', function () {
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns('undefined');
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns(null);
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests[0].url).to.not.include('us_privacy');
+    });
+
+    it('should not include gpp when gppString is null', function () {
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns(null);
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns(null);
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests[0].url).to.not.include('&gpp=');
+    });
+
+    it('should not include gdpr_consent when gdprString is null', function () {
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns(null);
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns(null);
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests[0].url).to.not.include('gdpr_consent');
+    });
+
+    it('should not include gdpr_consent when gdprString is the string "undefined"', function () {
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns(null);
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns({ consentString: 'undefined', gdprApplies: false });
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests[0].url).to.not.include('gdpr_consent');
+    });
+
+    it('should include gdpr_consent and gdpr=1 when gdprString is valid', function () {
+      const consentString = 'validConsent';
+      uspStub = sinon.stub(uspDataHandler, 'getConsentData').returns(null);
+      gppStub = sinon.stub(gppDataHandler, 'getConsentData').returns(null);
+      gdprStub = sinon.stub(gdprDataHandler, 'getConsentData').returns({ consentString, gdprApplies: true });
+
+      events.emit(EVENTS.BID_WON, getWonRequest());
+
+      expect(server.requests[0].url).to.include(`gdpr_consent=${encodeURIComponent(consentString)}`);
+      expect(server.requests[0].url).to.include('gdpr=1');
+    });
   });
 });

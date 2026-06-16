@@ -5,8 +5,9 @@ import { ajax } from '../src/ajax.js';
 import { EVENTS } from '../src/constants.js';
 import { detectBrowser } from '../libraries/intentIqUtils/detectBrowserUtils.js';
 import { appendSPData } from '../libraries/intentIqUtils/urlUtils.js';
-import { appendVrrefAndFui, getReferrer } from '../libraries/intentIqUtils/getRefferer.js';
-import { getCmpData } from '../libraries/intentIqUtils/getCmpData.js';
+import { appendVrrefAndFui, getCurrentUrl, getRelevantRefferer } from '../libraries/intentIqUtils/getRefferer.js';
+import { getCmpData, areCmpValuesEqual, isValidValue } from '../libraries/intentIqUtils/getCmpData.js';
+import { getUnitPosition } from '../libraries/intentIqUtils/getUnitPosition.js';
 import {
   VERSION,
   PREBID,
@@ -16,10 +17,12 @@ import { reportingServerAddress } from '../libraries/intentIqUtils/intentIqConfi
 import { handleAdditionalParams } from '../libraries/intentIqUtils/handleAdditionalParams.js';
 import { gamPredictionReport } from '../libraries/intentIqUtils/gamPredictionReport.js';
 import { defineABTestingGroup } from '../libraries/intentIqUtils/defineABTestingGroupUtils.js';
+import { getGlobal } from '../src/prebidGlobal.js';
 
 const MODULE_NAME = 'iiqAnalytics';
 const analyticsType = 'endpoint';
 const prebidVersion = '$prebid.version$';
+const pbjs = getGlobal();
 export const REPORTER_ID = Date.now() + '_' + getRandom(0, 1000);
 let globalName;
 let identityGlobalName;
@@ -65,15 +68,14 @@ const PARAMS_NAMES = {
   placementId: 'placementId',
   adType: 'adType',
   abTestUuid: 'abTestUuid',
+  abPercentage: 'abPercentage',
+  userPercentage: 'userPercentage',
 };
 
 const DEFAULT_URL = 'https://reports.intentiq.com/report';
 
 const getDataForDefineURL = () => {
-  const cmpData = getCmpData();
-  const gdprDetected = cmpData.gdprString;
-
-  return [iiqAnalyticsAnalyticsAdapter.initOptions.reportingServerAddress, gdprDetected];
+  return [iiqAnalyticsAnalyticsAdapter.initOptions.reportingServerAddress, iiqAnalyticsAnalyticsAdapter.initOptions.region];
 };
 
 const getDefaultInitOptions = () => {
@@ -90,11 +92,13 @@ const getDefaultInitOptions = () => {
     siloEnabled: false,
     reportMethod: null,
     abPercentage: null,
+    userPercentage: null,
     abTestUuid: null,
     additionalParams: null,
-    reportingServerAddress: ''
-  }
-}
+    reportingServerAddress: '',
+    region: ''
+  };
+};
 
 const iiqAnalyticsAnalyticsAdapter = Object.assign(adapter({ url: DEFAULT_URL, analyticsType }), {
   initOptions: getDefaultInitOptions(),
@@ -103,12 +107,23 @@ const iiqAnalyticsAnalyticsAdapter = Object.assign(adapter({ url: DEFAULT_URL, a
       case BID_WON:
         bidWon(args);
         break;
-      case BID_REQUESTED:
+      case BID_REQUESTED: {
         if (!alreadySubscribedOnGAM && shouldSubscribeOnGAM()) {
           alreadySubscribedOnGAM = true;
           gamPredictionReport(iiqConfig?.gamObjectReference, bidWon);
         }
+        const fpdFromGlobalObject = window[identityGlobalName]?.firstPartyData;
+        if (fpdFromGlobalObject) {
+          const currentCmpData = getCmpData();
+          const hasCmpMismatch = ['gdprString', 'gppString', 'uspString'].some(field =>
+            !areCmpValuesEqual(fpdFromGlobalObject[field], currentCmpData[field])
+          );
+          if (hasCmpMismatch) {
+            pbjs.refreshUserIds({ submoduleNames: ['intentIqId'] });
+          }
+        }
         break;
+      }
       default:
         break;
     }
@@ -121,14 +136,15 @@ const { BID_WON, BID_REQUESTED } = EVENTS;
 function initAdapterConfig(config) {
   if (iiqAnalyticsAnalyticsAdapter.initOptions.adapterConfigInitialized) return;
 
-  const options = config?.options || {}
-  iiqConfig = options
-  const { manualWinReportEnabled, gamPredictReporting, reportMethod, reportingServerAddress, adUnitConfig, partner, ABTestingConfigurationSource, browserBlackList, domainName, additionalParams } = options
+  const options = config?.options || {};
+  iiqConfig = options;
+  const { manualWinReportEnabled, gamPredictReporting, reportMethod, reportingServerAddress, region, adUnitConfig, partner, ABTestingConfigurationSource, browserBlackList, domainName, additionalParams } = options;
   iiqAnalyticsAnalyticsAdapter.initOptions.manualWinReportEnabled =
             manualWinReportEnabled || false;
   iiqAnalyticsAnalyticsAdapter.initOptions.reportMethod = parseReportingMethod(reportMethod);
   iiqAnalyticsAnalyticsAdapter.initOptions.gamPredictReporting = typeof gamPredictReporting === 'boolean' ? gamPredictReporting : false;
   iiqAnalyticsAnalyticsAdapter.initOptions.reportingServerAddress = typeof reportingServerAddress === 'string' ? reportingServerAddress : '';
+  iiqAnalyticsAnalyticsAdapter.initOptions.region = typeof region === 'string' ? region : '';
   iiqAnalyticsAnalyticsAdapter.initOptions.adUnitConfig = typeof adUnitConfig === 'number' ? adUnitConfig : 1;
   iiqAnalyticsAnalyticsAdapter.initOptions.configSource = ABTestingConfigurationSource;
   iiqAnalyticsAnalyticsAdapter.initOptions.currentGroup = defineABTestingGroup(options);
@@ -141,21 +157,21 @@ function initAdapterConfig(config) {
   iiqAnalyticsAnalyticsAdapter.initOptions.additionalParams = additionalParams || null;
   if (!partner) {
     logError('IIQ ANALYTICS -> partner ID is missing');
-    iiqAnalyticsAnalyticsAdapter.initOptions.partner = -1
-  } else iiqAnalyticsAnalyticsAdapter.initOptions.partner = partner
+    iiqAnalyticsAnalyticsAdapter.initOptions.partner = -1;
+  } else iiqAnalyticsAnalyticsAdapter.initOptions.partner = partner;
   defineGlobalVariableName();
-  iiqAnalyticsAnalyticsAdapter.initOptions.adapterConfigInitialized = true
+  iiqAnalyticsAnalyticsAdapter.initOptions.adapterConfigInitialized = true;
 }
 
 function receivePartnerData() {
   try {
     iiqAnalyticsAnalyticsAdapter.initOptions.dataInLs = null;
-    const FPD = window[identityGlobalName]?.firstPartyData
+    const FPD = window[identityGlobalName]?.firstPartyData;
     if (!window[identityGlobalName] || !FPD) {
-      return false
+      return false;
     }
-    iiqAnalyticsAnalyticsAdapter.initOptions.fpid = FPD
-    const { partnerData, clientsHints = '', actualABGroup } = window[identityGlobalName]
+    iiqAnalyticsAnalyticsAdapter.initOptions.fpid = FPD;
+    const { partnerData, clientHints = '', actualABGroup } = window[identityGlobalName];
 
     if (partnerData) {
       iiqAnalyticsAnalyticsAdapter.initOptions.dataIdsInitialized = true;
@@ -172,7 +188,13 @@ function receivePartnerData() {
     if (actualABGroup) {
       iiqAnalyticsAnalyticsAdapter.initOptions.currentGroup = actualABGroup;
     }
-    iiqAnalyticsAnalyticsAdapter.initOptions.clientsHints = clientsHints;
+    iiqAnalyticsAnalyticsAdapter.initOptions.clientHints = clientHints;
+
+    const { abPercentage, userProvidedAbPercentage } = window[identityGlobalName];
+    if (abPercentage !== undefined) {
+      iiqAnalyticsAnalyticsAdapter.initOptions.abPercentage = abPercentage;
+    }
+    iiqAnalyticsAnalyticsAdapter.initOptions.userPercentage = userProvidedAbPercentage;
   } catch (e) {
     logError(e);
     return false;
@@ -181,7 +203,7 @@ function receivePartnerData() {
 
 function shouldSubscribeOnGAM() {
   if (!iiqConfig?.gamObjectReference || !isPlainObject(iiqConfig.gamObjectReference)) return false;
-  const partnerData = window[identityGlobalName]?.partnerData
+  const partnerData = window[identityGlobalName]?.partnerData;
 
   if (partnerData) {
     return partnerData.gpr || (!('gpr' in partnerData) && iiqAnalyticsAnalyticsAdapter.initOptions.gamPredictReporting);
@@ -219,7 +241,7 @@ function bidWon(args, isReportExternal) {
     const preparedPayload = preparePayload(args);
     if (!preparedPayload) return false;
     if (success === false) {
-      preparedPayload[PARAMS_NAMES.terminationCause] = -1
+      preparedPayload[PARAMS_NAMES.terminationCause] = -1;
     }
     const { url, method, payload } = constructFullUrl(preparedPayload);
     if (method === 'POST') {
@@ -257,7 +279,7 @@ function defineGlobalVariableName() {
 
   const partnerId = iiqConfig?.partner || 0;
   globalName = `intentIqAnalyticsAdapter_${partnerId}`;
-  identityGlobalName = `iiq_identity_${partnerId}`
+  identityGlobalName = `iiq_identity_${partnerId}`;
 
   window[globalName] = { reportExternalWin };
 }
@@ -268,9 +290,10 @@ function getRandom(start, end) {
 
 export function preparePayload(data) {
   const result = getDefaultDataObject();
+  const fullUrl = getCurrentUrl();
   result[PARAMS_NAMES.partnerId] = iiqAnalyticsAnalyticsAdapter.initOptions.partner;
   result[PARAMS_NAMES.prebidVersion] = prebidVersion;
-  result[PARAMS_NAMES.referrer] = getReferrer();
+  result[PARAMS_NAMES.referrer] = getRelevantRefferer(iiqAnalyticsAnalyticsAdapter.initOptions.domainName, fullUrl);
   result[PARAMS_NAMES.terminationCause] = iiqAnalyticsAnalyticsAdapter.initOptions.terminationCause;
   result[PARAMS_NAMES.clientType] = iiqAnalyticsAnalyticsAdapter.initOptions.clientType;
   result[PARAMS_NAMES.siteId] = iiqAnalyticsAnalyticsAdapter.initOptions.siteId;
@@ -292,7 +315,13 @@ export function preparePayload(data) {
     result[PARAMS_NAMES.profile] = encodeURIComponent(iiqAnalyticsAnalyticsAdapter.initOptions.fpid.pid);
   }
   if (iiqAnalyticsAnalyticsAdapter.initOptions.configSource) {
-    result[PARAMS_NAMES.ABTestingConfigurationSource] = iiqAnalyticsAnalyticsAdapter.initOptions.configSource
+    result[PARAMS_NAMES.ABTestingConfigurationSource] = iiqAnalyticsAnalyticsAdapter.initOptions.configSource;
+  }
+  if (iiqAnalyticsAnalyticsAdapter.initOptions.abPercentage !== null) {
+    result[PARAMS_NAMES.abPercentage] = iiqAnalyticsAnalyticsAdapter.initOptions.abPercentage;
+  }
+  if (iiqAnalyticsAnalyticsAdapter.initOptions.userPercentage !== undefined && iiqAnalyticsAnalyticsAdapter.initOptions.userPercentage !== null) {
+    result[PARAMS_NAMES.userPercentage] = iiqAnalyticsAnalyticsAdapter.initOptions.userPercentage;
   }
   prepareData(data, result);
 
@@ -327,30 +356,32 @@ function fillEidsData(result) {
 function prepareData(data, result) {
   const adTypeValue = data.adType || data.mediaType;
 
-  if (data.bidderCode) {
-    result.bidderCode = data.bidderCode;
+  if (data.bidderCode) result.bidderCode = data.bidderCode;
+  if (data.cpm) result.cpm = data.cpm;
+  if (data.currency) result.currency = data.currency;
+  if (data.originalCpm) result.originalCpm = data.originalCpm;
+  if (data.originalCurrency) result.originalCurrency = data.originalCurrency;
+  if (data.status) result.status = data.status;
+  if (data.size) result.size = data.size;
+  if (typeof data.pos === 'number') {
+    result.pos = data.pos;
+  } else if (data.adUnitCode) {
+    const pos = getUnitPosition(pbjs, data.adUnitCode);
+    if (typeof pos === 'number') result.pos = pos;
   }
-  if (data.cpm) {
-    result.cpm = data.cpm;
+  if (data.size) {
+    result.size = data.size;
   }
-  if (data.currency) {
-    result.currency = data.currency;
-  }
-  if (data.originalCpm) {
-    result.originalCpm = data.originalCpm;
-  }
-  if (data.originalCurrency) {
-    result.originalCurrency = data.originalCurrency;
-  }
-  if (data.status) {
-    result.status = data.status;
+  if (typeof data.pos === 'number') {
+    result.pos = data.pos;
+  } else if (data.adUnitCode) {
+    const pos = getUnitPosition(pbjs, data.adUnitCode);
+    if (typeof pos === 'number') result.pos = pos;
   }
 
   result.prebidAuctionId = data.auctionId || data.prebidAuctionId;
 
-  if (adTypeValue) {
-    result[PARAMS_NAMES.adType] = adTypeValue;
-  }
+  if (adTypeValue) result[PARAMS_NAMES.adType] = adTypeValue;
 
   switch (iiqAnalyticsAnalyticsAdapter.initOptions.adUnitConfig) {
     case 1:
@@ -375,7 +406,8 @@ function prepareData(data, result) {
   }
 
   result.biddingPlatformId = data.biddingPlatformId || 1;
-  result.partnerAuctionId = 'BW';
+
+  if (data?.partnerAuctionId) result.partnerAuctionId = data.partnerAuctionId;
 }
 
 function extractPlacementId(data) {
@@ -396,7 +428,6 @@ function getDefaultDataObject() {
   return {
     inbbl: false,
     pbjsver: prebidVersion,
-    partnerAuctionId: 'BW',
     reportSource: 'pbjs',
     jsversion: VERSION,
     partnerId: -1,
@@ -410,7 +441,9 @@ function getDefaultDataObject() {
 function constructFullUrl(data) {
   const report = [];
   const reportMethod = iiqAnalyticsAnalyticsAdapter.initOptions.reportMethod;
+  const partnerData = window[identityGlobalName]?.partnerData;
   const currentBrowserLowerCase = detectBrowser();
+  const partnerAuctionId = data?.partnerAuctionId;
   data = btoa(JSON.stringify(data));
   report.push(data);
 
@@ -420,8 +453,13 @@ function constructFullUrl(data) {
   let url =
         baseUrl +
         '?pid=' +
-        iiqAnalyticsAnalyticsAdapter.initOptions.partner +
-        '&mct=1' +
+        iiqAnalyticsAnalyticsAdapter.initOptions.partner;
+  if (partnerAuctionId) {
+    url +=
+          '&paucid=' +
+          encodeURIComponent(JSON.stringify([partnerAuctionId]));
+  }
+  url += '&mct=1' +
         (iiqAnalyticsAnalyticsAdapter.initOptions?.fpid
           ? '&iiqid=' + encodeURIComponent(iiqAnalyticsAnalyticsAdapter.initOptions.fpid.pcid)
           : '') +
@@ -432,31 +470,39 @@ function constructFullUrl(data) {
         '&source=' +
         PREBID +
         '&uh=' +
-        encodeURIComponent(iiqAnalyticsAnalyticsAdapter.initOptions.clientsHints) +
-        (cmpData.uspString ? '&us_privacy=' + encodeURIComponent(cmpData.uspString) : '') +
-        (cmpData.gppString ? '&gpp=' + encodeURIComponent(cmpData.gppString) : '') +
-        (cmpData.gdprString ? '&gdpr_consent=' + encodeURIComponent(cmpData.gdprString) + '&gdpr=1' : '&gdpr=0');
-  url = appendSPData(url, iiqAnalyticsAnalyticsAdapter.initOptions.fpid);
+        encodeURIComponent(iiqAnalyticsAnalyticsAdapter.initOptions.clientHints) +
+        (isValidValue(cmpData.uspString) ? '&us_privacy=' + encodeURIComponent(cmpData.uspString) : '') +
+        (isValidValue(cmpData.gppString) ? '&gpp=' + encodeURIComponent(cmpData.gppString) : '') +
+        (isValidValue(cmpData.gdprString)
+          ? '&gdpr_consent=' + encodeURIComponent(cmpData.gdprString) + '&gdpr=1'
+          : '&gdpr=0') +
+        (cmpData.gdprApplies && isValidValue(cmpData.tcfApiVersion) ? '&tcfv=' + encodeURIComponent(cmpData.tcfApiVersion) : '');
+
+  url = appendSPData(url, partnerData);
   url = appendVrrefAndFui(url, iiqAnalyticsAnalyticsAdapter.initOptions.domainName);
 
-  if (reportMethod === 'POST') {
-    return { url, method: 'POST', payload: JSON.stringify(report) };
+  if (reportMethod !== 'POST') {
+    url += '&payload=' + encodeURIComponent(JSON.stringify(report));
   }
-  url += '&payload=' + encodeURIComponent(JSON.stringify(report));
+
   url = handleAdditionalParams(
     currentBrowserLowerCase,
     url,
     2,
     iiqAnalyticsAnalyticsAdapter.initOptions.additionalParams
   );
-  return { url, method: 'GET' };
+
+  if (reportMethod === 'POST') {
+    return { url, method: 'POST', payload: JSON.stringify(report) };
+  }
+  return { url };
 }
 
 iiqAnalyticsAnalyticsAdapter.originEnableAnalytics = iiqAnalyticsAnalyticsAdapter.enableAnalytics;
 
 iiqAnalyticsAnalyticsAdapter.enableAnalytics = function (myConfig) {
   iiqAnalyticsAnalyticsAdapter.originEnableAnalytics(myConfig); // call the base class function
-  initAdapterConfig(myConfig)
+  initAdapterConfig(myConfig);
 };
 
 iiqAnalyticsAnalyticsAdapter.originDisableAnalytics = iiqAnalyticsAnalyticsAdapter.disableAnalytics;
@@ -467,8 +513,8 @@ iiqAnalyticsAnalyticsAdapter.disableAnalytics = function() {
   reportList = {};
   cleanReportsID = undefined;
   iiqConfig = undefined;
-  iiqAnalyticsAnalyticsAdapter.initOptions = getDefaultInitOptions()
-  iiqAnalyticsAnalyticsAdapter.originDisableAnalytics()
+  iiqAnalyticsAnalyticsAdapter.initOptions = getDefaultInitOptions();
+  iiqAnalyticsAnalyticsAdapter.originDisableAnalytics();
 };
 adapterManager.registerAnalyticsAdapter({
   adapter: iiqAnalyticsAnalyticsAdapter,

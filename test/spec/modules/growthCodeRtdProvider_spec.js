@@ -1,5 +1,5 @@
-import {config} from 'src/config.js';
-import {growthCodeRtdProvider, storage} from '../../../modules/growthCodeRtdProvider.js';
+import { config } from 'src/config.js';
+import { growthCodeRtdProvider, storage } from '../../../modules/growthCodeRtdProvider.js';
 import sinon from 'sinon';
 
 const sampleConfig = {
@@ -8,7 +8,7 @@ const sampleConfig = {
   params: {
     pid: 'TEST01',
   }
-}
+};
 
 const sampleEids = [
   {
