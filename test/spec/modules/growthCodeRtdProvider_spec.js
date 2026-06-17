@@ -105,18 +105,6 @@ describe('growthCodeRtdProvider', function() {
       }, sampleConfig, null);
     });
 
-    it('calls callback when gceb is not in localStorage', function (done) {
-      growthCodeRtdProvider.init(sampleConfig, null);
-      getDataStub.withArgs('gceb', null).returns(null);
-
-      const bidConfig = { ortb2Fragments: { global: {} } };
-
-      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
-        expect(bidConfig.ortb2Fragments.global.user).to.be.undefined;
-        done();
-      }, sampleConfig, null);
-    });
-
     it('calls callback when gceb is invalid JSON', function (done) {
       growthCodeRtdProvider.init(sampleConfig, null);
       getDataStub.withArgs('gceb', null).returns('not-valid-json');
@@ -146,6 +134,81 @@ describe('growthCodeRtdProvider', function() {
         expect(userEids[0].source).to.equal('growthcode.io');
         done();
       }, sampleConfig, null);
+    });
+  });
+
+  describe('getBidRequestData - cold start (gceb not yet written)', function() {
+    let clock;
+
+    beforeEach(function () {
+      clock = sinon.useFakeTimers();
+    });
+
+    afterEach(function () {
+      clock.restore();
+    });
+
+    it('waits and injects when growthCodeEIDArrayPresentEvent fires', function (done) {
+      getDataStub.withArgs('gceb', null).returns(null); // absent at auction time
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        const userEids = bidConfig.ortb2Fragments.global.user.ext.eids;
+        expect(userEids).to.have.length(3);
+        expect(userEids[0].source).to.equal('growthcode.io');
+        done();
+      }, sampleConfig, null);
+
+      // gc_superscript finishes /v4/sync, writes the blob and fires the event.
+      getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
+      window.dispatchEvent(new Event('growthCodeEIDArrayPresentEvent'));
+    });
+
+    it('injects when the blob appears via polling', function (done) {
+      getDataStub.withArgs('gceb', null).returns(null);
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        const userEids = bidConfig.ortb2Fragments.global.user.ext.eids;
+        expect(userEids).to.have.length(3);
+        done();
+      }, sampleConfig, null);
+
+      // Blob written shortly after, with no event dispatched — poll should catch it.
+      getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
+      clock.tick(50);
+    });
+
+    it('releases the auction without eids after the wait times out', function (done) {
+      getDataStub.withArgs('gceb', null).returns(null); // never written
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        expect(bidConfig.ortb2Fragments.global.user).to.be.undefined;
+        done();
+      }, sampleConfig, null);
+
+      clock.tick(1000); // DEFAULT_WAIT_MS
+    });
+
+    it('honors a custom params.eidWaitMs timeout', function (done) {
+      getDataStub.withArgs('gceb', null).returns(null);
+      const cfg = { name: 'growthCodeRtd', waitForIt: true, params: { pid: 'TEST01', eidWaitMs: 300 } };
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+      let called = false;
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        called = true;
+        done();
+      }, cfg, null);
+
+      clock.tick(299);
+      expect(called).to.equal(false); // not yet
+      clock.tick(1);
     });
   });
 });
