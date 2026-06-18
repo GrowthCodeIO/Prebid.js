@@ -165,20 +165,40 @@ describe('growthCodeRtdProvider', function() {
       window.dispatchEvent(new Event('growthCodeEIDArrayPresentEvent'));
     });
 
-    it('injects when the blob appears via polling', function (done) {
+    it('does not release the auction before the blob is ready', function (done) {
+      getDataStub.withArgs('gceb', null).returns(null); // absent
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+      let called = false;
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        called = true;
+        done();
+      }, sampleConfig, null);
+
+      clock.tick(999);
+      expect(called).to.equal(false); // still waiting for event/timeout
+
+      // event arrives just before the timeout
+      getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
+      window.dispatchEvent(new Event('growthCodeEIDArrayPresentEvent'));
+    });
+
+    it('injects on timeout if the blob appeared without an event', function (done) {
       getDataStub.withArgs('gceb', null).returns(null);
 
       const bidConfig = { ortb2Fragments: { global: {} } };
 
       growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        // finish() re-reads localStorage, so a blob written without an event
+        // is still injected when the timeout fires.
         const userEids = bidConfig.ortb2Fragments.global.user.ext.eids;
         expect(userEids).to.have.length(3);
         done();
       }, sampleConfig, null);
 
-      // Blob written shortly after, with no event dispatched — poll should catch it.
       getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
-      clock.tick(50);
+      clock.tick(1000); // timeout path re-reads and injects
     });
 
     it('releases the auction without eids after the wait times out', function (done) {

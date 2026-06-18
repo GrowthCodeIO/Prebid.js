@@ -13,9 +13,9 @@ const LOG_PREFIX = 'GrowthCodeRtd: ';
 const EID_BLOB_KEY = 'gceb';
 // Event dispatched by gc_superscript once it has written the EID blob.
 const EID_READY_EVENT = 'growthCodeEIDArrayPresentEvent';
-// Max time (ms) to wait for the blob on a cold load. Must be <= auctionDelay.
+// Max time (ms) to wait for the blob on a cold load. Should be <= the configured
+// realTimeData.auctionDelay (Prebid force-proceeds at auctionDelay regardless).
 const DEFAULT_WAIT_MS = 1000;
-const POLL_INTERVAL_MS = 50;
 
 export const storage = getStorageManager({ moduleType: MODULE_TYPE_RTD, moduleName: MODULE_NAME });
 
@@ -91,10 +91,11 @@ function injectEids(reqBidsConfigObj) {
  *
  * Cold path: the blob has not been written yet by gc_superscript. Rather than
  * releasing the auction immediately (and missing the EIDs), wait for the
- * `growthCodeEIDArrayPresentEvent`, a localStorage poll, or a timeout —
- * whichever comes first — then inject and release. This spends the auctionDelay
- * budget, so it only helps when the provider is configured with
- * `waitForIt: true` and a non-zero `auctionDelay`.
+ * `growthCodeEIDArrayPresentEvent` (dispatched by gc_superscript once it has
+ * written the blob) or a timeout — whichever comes first — then inject and
+ * release. This holds the auction only when the provider is configured with
+ * `waitForIt: true` and a non-zero `realTimeData.auctionDelay`; Prebid also
+ * force-proceeds at `auctionDelay`, so keep `params.eidWaitMs` <= auctionDelay.
  * @param reqBidsConfigObj
  * @param callback
  * @param config
@@ -111,17 +112,15 @@ function alterBidRequests(reqBidsConfigObj, callback, config, userConsent) {
   const waitMs = (config && config.params && config.params.eidWaitMs) || DEFAULT_WAIT_MS;
 
   let settled = false;
-  let pollTimer;
   let maxTimer;
 
+  // Released exactly once — by the EID-ready event or the timeout, whichever
+  // fires first. Always tears down the listener/timer and releases the auction.
   const finish = () => {
     if (settled) {
       return;
     }
     settled = true;
-    if (pollTimer) {
-      clearInterval(pollTimer);
-    }
     if (maxTimer) {
       clearTimeout(maxTimer);
     }
@@ -133,14 +132,10 @@ function alterBidRequests(reqBidsConfigObj, callback, config, userConsent) {
   const onReady = () => finish();
 
   window.addEventListener(EID_READY_EVENT, onReady);
-  pollTimer = setInterval(() => {
-    if (storage.getDataFromLocalStorage(EID_BLOB_KEY, null) !== null) {
-      finish();
-    }
-  }, POLL_INTERVAL_MS);
   maxTimer = setTimeout(finish, waitMs);
 
-  // Cover the race where the blob landed between the warm check and listener setup.
+  // Cover the race where the blob landed between the warm check and listener
+  // setup (e.g. the event fired before the listener was attached).
   if (storage.getDataFromLocalStorage(EID_BLOB_KEY, null) !== null) {
     finish();
   }
