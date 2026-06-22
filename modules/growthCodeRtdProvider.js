@@ -7,15 +7,16 @@ import { submodule } from '../src/hook.js';
 import { getStorageManager } from '../src/storageManager.js';
 import { logMessage, logError, mergeDeep } from '../src/utils.js';
 import { MODULE_TYPE_RTD } from '../src/activities/modules.js';
+import { config as prebidConfig } from '../src/config.js';
 
 const MODULE_NAME = 'growthCodeRtd';
 const LOG_PREFIX = 'GrowthCodeRtd: ';
 const EID_BLOB_KEY = 'gceb';
 // Event dispatched by gc_superscript once it has written the EID blob.
 const EID_READY_EVENT = 'growthCodeEIDArrayPresentEvent';
-// Max time (ms) to wait for the blob on a cold load. Should be <= the configured
-// realTimeData.auctionDelay (Prebid force-proceeds at auctionDelay regardless).
-const DEFAULT_WAIT_MS = 1000;
+// Default/maximum time (ms) to wait for the blob on a cold load when no
+// realTimeData.auctionDelay is set. When auctionDelay IS set, that becomes the cap.
+const DEFAULT_WAIT_MS = 900;
 
 export const storage = getStorageManager({ moduleType: MODULE_TYPE_RTD, moduleName: MODULE_NAME });
 
@@ -102,14 +103,31 @@ function injectEids(reqBidsConfigObj) {
  * @param userConsent
  */
 function alterBidRequests(reqBidsConfigObj, callback, config, userConsent) {
+  // logMessage(LOG_PREFIX + 'getBidRequestData fired; checking localStorage["' + EID_BLOB_KEY + '"]');
+
   // Warm path — blob already present.
   if (injectEids(reqBidsConfigObj)) {
+    // logMessage(LOG_PREFIX + 'warm path — gceb already present, released immediately');
     callback();
     return;
   }
 
   // Cold path — wait for gc_superscript to write the blob.
-  const waitMs = (config && config.params && config.params.eidWaitMs) || DEFAULT_WAIT_MS;
+  // Prebid force-proceeds at realTimeData.auctionDelay, so that's the ceiling.
+  //   - eidWaitMs set:   use it, but never exceed auctionDelay (or 900ms if none).
+  //   - eidWaitMs unset: follow the publisher's auctionDelay budget (or 900ms if none).
+  const rtdConfig = prebidConfig.getConfig('realTimeData');
+  const auctionDelay = (rtdConfig && rtdConfig.auctionDelay) || 0;
+  const eidWaitMs = config && config.params && config.params.eidWaitMs;
+  let waitMs;
+  if (eidWaitMs) {
+    waitMs = Math.min(eidWaitMs, auctionDelay > 0 ? auctionDelay : DEFAULT_WAIT_MS);
+  } else {
+    waitMs = auctionDelay > 0 ? auctionDelay : DEFAULT_WAIT_MS;
+  }
+
+  // logMessage(LOG_PREFIX + 'cold path — gceb not present. eidWaitMs=' + (eidWaitMs || 'unset') +
+  //   ', auctionDelay=' + (auctionDelay || 'unset') + ' -> waiting up to ' + waitMs + 'ms for event');
 
   let settled = false;
   let maxTimer;

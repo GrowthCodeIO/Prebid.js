@@ -166,7 +166,9 @@ describe('growthCodeRtdProvider', function() {
     });
 
     it('does not release the auction before the blob is ready', function (done) {
+      config.setConfig({ realTimeData: { auctionDelay: 2000 } });
       getDataStub.withArgs('gceb', null).returns(null); // absent
+      const cfg = { name: 'growthCodeRtd', waitForIt: true, params: { pid: 'TEST01', eidWaitMs: 2000 } };
 
       const bidConfig = { ortb2Fragments: { global: {} } };
       let called = false;
@@ -174,12 +176,12 @@ describe('growthCodeRtdProvider', function() {
       growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
         called = true;
         done();
-      }, sampleConfig, null);
+      }, cfg, null);
 
-      clock.tick(999);
-      expect(called).to.equal(false); // still waiting for event/timeout
+      clock.tick(500);
+      expect(called).to.equal(false); // still waiting (timeout is 2000ms)
 
-      // event arrives just before the timeout
+      // event arrives before the timeout
       getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
       window.dispatchEvent(new Event('growthCodeEIDArrayPresentEvent'));
     });
@@ -198,7 +200,7 @@ describe('growthCodeRtdProvider', function() {
       }, sampleConfig, null);
 
       getDataStub.withArgs('gceb', null).returns(JSON.stringify(sampleEids));
-      clock.tick(1000); // timeout path re-reads and injects
+      clock.tick(900); // timeout path re-reads and injects
     });
 
     it('releases the auction without eids after the wait times out', function (done) {
@@ -211,7 +213,44 @@ describe('growthCodeRtdProvider', function() {
         done();
       }, sampleConfig, null);
 
-      clock.tick(1000); // DEFAULT_WAIT_MS
+      clock.tick(900); // DEFAULT_WAIT_MS
+    });
+
+    it('falls back to auctionDelay when eidWaitMs is not set', function (done) {
+      config.setConfig({ realTimeData: { auctionDelay: 2000 } });
+      getDataStub.withArgs('gceb', null).returns(null);
+      const cfg = { name: 'growthCodeRtd', waitForIt: true, params: { pid: 'TEST01' } }; // no eidWaitMs
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+      let called = false;
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        called = true;
+        done();
+      }, cfg, null);
+
+      clock.tick(900);
+      expect(called).to.equal(false); // does not stop at the 900ms default — follows auctionDelay
+      clock.tick(1100); // total 2000ms = auctionDelay
+      expect(called).to.equal(true);
+    });
+
+    it('caps the wait at 900ms when eidWaitMs is large and no auctionDelay is set', function (done) {
+      getDataStub.withArgs('gceb', null).returns(null);
+      const cfg = { name: 'growthCodeRtd', waitForIt: true, params: { pid: 'TEST01', eidWaitMs: 15000 } };
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+      let called = false;
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        called = true;
+        done();
+      }, cfg, null);
+
+      clock.tick(899);
+      expect(called).to.equal(false); // not yet
+      clock.tick(1); // 900ms cap reached despite eidWaitMs: 15000
+      expect(called).to.equal(true);
     });
 
     it('honors a custom params.eidWaitMs timeout', function (done) {
@@ -229,6 +268,25 @@ describe('growthCodeRtdProvider', function() {
       clock.tick(299);
       expect(called).to.equal(false); // not yet
       clock.tick(1);
+    });
+
+    it('clamps eidWaitMs to realTimeData.auctionDelay', function (done) {
+      config.setConfig({ realTimeData: { auctionDelay: 1000 } });
+      getDataStub.withArgs('gceb', null).returns(null);
+      const cfg = { name: 'growthCodeRtd', waitForIt: true, params: { pid: 'TEST01', eidWaitMs: 15000 } };
+
+      const bidConfig = { ortb2Fragments: { global: {} } };
+      let called = false;
+
+      growthCodeRtdProvider.getBidRequestData(bidConfig, function () {
+        called = true;
+        done();
+      }, cfg, null);
+
+      // Without clamping the timer would be 15000ms; clamped to auctionDelay it
+      // releases at 1000ms.
+      clock.tick(1000);
+      expect(called).to.equal(true);
     });
   });
 });
