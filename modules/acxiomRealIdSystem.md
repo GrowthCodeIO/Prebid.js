@@ -25,7 +25,7 @@ The following configuration parameters are available:
 | storage | Required | Object | Storage configuration | |
 | storage.type | Required | String | Storage type | `'html5'` |
 | storage.name | Required | String | Storage key | `'acxiomRealId'` |
-| storage.expires | Required | Number | TTL in days | `7` |
+| storage.expires | Required | Number | TTL in days for the resolved ID. Also used as the no-ID retry window (see below). | `7` |
 
 ### Example Configuration
 
@@ -68,6 +68,27 @@ pbjs.setConfig({
   }
 });
 ```
+
+### Empty-response (no-ID) caching
+
+When the lookup API returns **no ID** for a user, the module records a short-lived
+marker in localStorage and **does not call the API again** until that window
+elapses. This avoids repeatedly hitting the endpoint for users who currently do
+not resolve.
+
+- The retry window defaults to **7 days**, or the value of `storage.expires`
+  (in days) when it is set. Example: `storage.expires: 2` → the module will not
+  re-request a no-ID user for 2 days.
+- The marker is stored under `<storage.name>_no_id_retry_after` (e.g.
+  `acxiomRealId_no_id_retry_after`) and holds the epoch-ms timestamp after which a
+  retry is allowed. No EID array is cached — while the marker is fresh the module
+  simply resolves no ID without making a network request.
+- The marker is cleared automatically when an ID later resolves, and on a data
+  deletion request.
+- The marker is **not** set on transient API/network errors — only on a
+  successful response that contains no matching ID.
+- Suppression is per-browser (the browser does not have access to its own IP, so
+  it cannot be keyed per-IP).
 
 ### EID Output
 
