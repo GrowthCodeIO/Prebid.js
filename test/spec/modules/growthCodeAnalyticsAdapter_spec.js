@@ -177,11 +177,11 @@ describe('growthCode analytics adapter', () => {
     expect(ajaxCalls.length).to.equal(0);
   });
 
-  it('also sends legacy batch when bidWon is included in trackEvents config', () => {
+  it('sends exactly one enriched request per bidWon regardless of trackEvents config', () => {
     growthCodeAnalyticsAdapter.disableAnalytics();
     growthCodeAnalyticsAdapter.enableAnalytics({
       provider: 'growthCodeAnalytics',
-      options: { pid: 'TEST01', trackEvents: ['bidWon'] }
+      options: { pid: 'TEST01', trackEvents: ['bidWon', 'auctionEnd', 'bidRequested', 'bidResponse', 'bidTimeout', 'noBid'] }
     });
 
     events.emit(EVENTS.BID_WON, {
@@ -194,12 +194,25 @@ describe('growthCode analytics adapter', () => {
       meta: {}
     });
 
-    // enriched call (logBidWonToServer) + legacy batch call (logToServer)
-    expect(ajaxCalls.length).to.equal(2);
-    const legacyCall = ajaxCalls.find(c => !c[0].includes('?gcid='));
-    expect(legacyCall).to.exist;
-    const legacyBody = JSON.parse(legacyCall[2]);
-    expect(legacyBody.events).to.be.an('array').with.lengthOf(1);
+    // Previously this also fired a second, query-param-less "legacy batch" request
+    // (logToServer) that always 400'd against the current backend, which requires
+    // gcid/pid/u as query params. That path has been removed -- only the enriched
+    // call should fire.
+    expect(ajaxCalls.length).to.equal(1);
+    expect(ajaxCalls[0][0]).to.include('?gcid=');
+  });
+
+  it('does not send any request for auctionEnd, even when included in trackEvents', () => {
+    growthCodeAnalyticsAdapter.disableAnalytics();
+    growthCodeAnalyticsAdapter.enableAnalytics({
+      provider: 'growthCodeAnalytics',
+      options: { pid: 'TEST01', trackEvents: ['auctionEnd', 'bidRequested', 'bidResponse', 'bidTimeout', 'noBid'] }
+    });
+
+    events.emit(EVENTS.AUCTION_END, { auctionId: generateUUID() });
+    events.emit(EVENTS.BID_RESPONSE, { bidderCode: 'appnexus', cpm: 1.0 });
+
+    expect(ajaxCalls.length).to.equal(0);
   });
 
   it('does not send requests for non-bidWon events when trackEvents is empty', () => {

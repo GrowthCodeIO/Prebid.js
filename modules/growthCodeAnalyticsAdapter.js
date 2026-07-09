@@ -24,7 +24,6 @@ let trackEvents = [];
 let pid = DEFAULT_PID;
 let url = ENDPOINT_URL;
 
-let eventQueue = [];
 let bidWonQueue = [];
 
 let startAuction = 0;
@@ -137,42 +136,8 @@ growthCodeAnalyticsAdapter.enableAnalytics = function(conf = {}) {
   growthCodeAnalyticsAdapter.originEnableAnalytics(conf);
 };
 
-function logToServer() {
-  if (pid === DEFAULT_PID) return;
-  if (eventQueue.length >= 1) {
-    const gcid = storage.getDataFromLocalStorage('gcid');
-
-    const data = {
-      session: sessionId,
-      pid: pid,
-      gcid: gcid,
-      timestamp: Date.now(),
-      url: getRefererInfo().page,
-      referer: document.referrer,
-      events: eventQueue
-    };
-
-    ajax(url, {
-      success: response => {
-        logInfo(MODULE_NAME + ' Send Data to Server');
-      },
-      error: error => {
-        logInfo(MODULE_NAME + ' Problem Send Data to Server: ' + error);
-      }
-    }, JSON.stringify(data), { method: 'POST', withCredentials: true });
-
-    eventQueue = [
-    ];
-  }
-}
-
 function sendEvent(event) {
-  eventQueue.push(event);
   logInfo(MODULE_NAME + 'Analytics Event: ' + event);
-
-  if ((event.eventType === EVENTS.AUCTION_END) || (event.eventType === EVENTS.BID_WON)) {
-    logToServer();
-  }
 }
 
 function queueBidWon(bid) {
@@ -237,7 +202,5 @@ adapterManager.registerAnalyticsAdapter({
   adapter: growthCodeAnalyticsAdapter,
   code: 'growthCodeAnalytics'
 });
-
-growthCodeAnalyticsAdapter.logToServer = logToServer;
 
 export default growthCodeAnalyticsAdapter;
