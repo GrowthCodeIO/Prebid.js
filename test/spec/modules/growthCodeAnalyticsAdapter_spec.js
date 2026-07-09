@@ -202,14 +202,80 @@ describe('growthCode analytics adapter', () => {
     expect(ajaxCalls[0][0]).to.include('?gcid=');
   });
 
-  it('does not send any request for auctionEnd, even when included in trackEvents', () => {
+  it('batches auctionEnd/bidRequested/bidResponse/bidTimeout/noBid into a single request fired on auctionEnd', () => {
     growthCodeAnalyticsAdapter.disableAnalytics();
     growthCodeAnalyticsAdapter.enableAnalytics({
       provider: 'growthCodeAnalytics',
       options: { pid: 'TEST01', trackEvents: ['auctionEnd', 'bidRequested', 'bidResponse', 'bidTimeout', 'noBid'] }
     });
 
-    events.emit(EVENTS.AUCTION_END, { auctionId: generateUUID() });
+    const auctionId = generateUUID();
+
+    events.emit(EVENTS.BID_REQUESTED, {
+      auctionId,
+      bidderCode: 'appnexus',
+      bids: [{ bidder: 'appnexus', adUnitCode: 'div-1' }, { bidder: 'appnexus', adUnitCode: 'div-2' }]
+    });
+
+    // Nothing sent yet -- only accumulated, waiting for the auctionEnd flush.
+    expect(ajaxCalls.length).to.equal(0);
+
+    events.emit(EVENTS.BID_RESPONSE, {
+      auctionId,
+      bidderCode: 'appnexus',
+      currency: 'USD',
+      cpm: 0.75,
+      adUnitCode: 'div-1',
+      adId: 'resp-1',
+      meta: { advertiserDomains: ['example.com'] }
+    });
+
+    events.emit(EVENTS.NO_BID, { auctionId, bidderCode: 'rubicon', adUnitCode: 'div-2' });
+
+    events.emit(EVENTS.BID_TIMEOUT, [
+      { auctionId, bidder: 'sovrn', adUnitCode: 'div-1' },
+      { auctionId, bidder: 'openx', adUnitCode: 'div-2' }
+    ]);
+
+    expect(ajaxCalls.length).to.equal(0);
+
+    events.emit(EVENTS.AUCTION_END, { auctionId });
+
+    // Exactly one request for the whole auction, not one per event.
+    expect(ajaxCalls.length).to.equal(1);
+
+    const body = JSON.parse(lastCall()[2]);
+    // 2 bidRequested rows (one per bid) + 1 bidResponse + 1 noBid + 2 bidTimeout + 1 auctionEnd = 7
+    expect(body.events).to.have.length(7);
+
+    const byEvent = (name) => body.events.filter(e => e.event === name);
+    expect(byEvent('bidRequested')).to.have.length(2);
+    expect(byEvent('bidRequested')[0].ad_unit_code).to.equal('div-1');
+    expect(byEvent('bidRequested')[1].ad_unit_code).to.equal('div-2');
+
+    expect(byEvent('bidResponse')).to.have.length(1);
+    expect(byEvent('bidResponse')[0].cpm).to.equal(0.75);
+    expect(byEvent('bidResponse')[0].advertiser_domains).to.deep.equal(['example.com']);
+
+    expect(byEvent('noBid')).to.have.length(1);
+    expect(byEvent('noBid')[0].bidder).to.equal('rubicon');
+
+    expect(byEvent('bidTimeout')).to.have.length(2);
+    expect(byEvent('bidTimeout').map(e => e.bidder)).to.deep.equal(['sovrn', 'openx']);
+
+    expect(byEvent('auctionEnd')).to.have.length(1);
+    expect(byEvent('auctionEnd')[0].auction_id).to.equal(auctionId);
+
+    body.events.forEach(e => expect(e.auction_id).to.equal(auctionId));
+  });
+
+  it('does not send a batch request before auctionEnd fires', () => {
+    growthCodeAnalyticsAdapter.disableAnalytics();
+    growthCodeAnalyticsAdapter.enableAnalytics({
+      provider: 'growthCodeAnalytics',
+      options: { pid: 'TEST01', trackEvents: ['auctionEnd', 'bidRequested', 'bidResponse', 'bidTimeout', 'noBid'] }
+    });
+
     events.emit(EVENTS.BID_RESPONSE, { bidderCode: 'appnexus', cpm: 1.0 });
 
     expect(ajaxCalls.length).to.equal(0);

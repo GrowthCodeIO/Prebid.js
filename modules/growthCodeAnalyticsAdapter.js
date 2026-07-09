@@ -25,91 +25,47 @@ let pid = DEFAULT_PID;
 let url = ENDPOINT_URL;
 
 let bidWonQueue = [];
+let batchQueue = [];
 
-let startAuction = 0;
-let bidRequestTimeout = 0;
 const analyticsType = 'endpoint';
 
 const growthCodeAnalyticsAdapter = Object.assign(adapter({ url: url, analyticsType }), {
   track({ eventType, args }) {
-    const eventData = args ? utils.deepClone(args) : {};
-    let data = {};
-
-    switch (eventType) {
-      case EVENTS.AUCTION_INIT: {
-        data = eventData;
-        startAuction = data.timestamp;
-        bidRequestTimeout = data.timeout;
-        break;
-      }
-
-      case EVENTS.AUCTION_END: {
-        data = eventData;
-        data.start = startAuction;
-        data.end = Date.now();
-        break;
-      }
-
-      case EVENTS.BID_ADJUSTMENT: {
-        data.bidders = eventData;
-        break;
-      }
-
-      case EVENTS.BID_TIMEOUT: {
-        data.bidders = eventData;
-        data.duration = bidRequestTimeout;
-        break;
-      }
-
-      case EVENTS.BID_REQUESTED: {
-        data = eventData;
-        break;
-      }
-
-      case EVENTS.BID_RESPONSE: {
-        data = eventData;
-        delete data.ad;
-        break;
-      }
-
-      case EVENTS.BID_WON: {
-        data = eventData;
-        delete data.ad;
-        delete data.adUrl;
-        queueBidWon(args ? { ...args } : {});
-        break;
-      }
-
-      case EVENTS.BIDDER_DONE: {
-        data = eventData;
-        break;
-      }
-
-      case EVENTS.SET_TARGETING: {
-        data.targetings = eventData;
-        break;
-      }
-
-      case EVENTS.REQUEST_BIDS: {
-        data = eventData;
-        break;
-      }
-
-      case EVENTS.NO_BID: {
-        data = eventData;
-        break;
-      }
-
-      default:
-        return;
+    // bidWon is sent immediately, on its own, regardless of trackEvents config --
+    // existing/tested behavior, independent of the batched events below.
+    if (eventType === EVENTS.BID_WON) {
+      queueBidWon(args ? { ...args } : {});
     }
 
     if (!trackEvents.includes(eventType)) return;
 
-    data.eventType = eventType;
-    data.timestamp = data.timestamp || Date.now();
+    switch (eventType) {
+      case EVENTS.BID_REQUESTED:
+        queueBidRequested(args || {});
+        break;
 
-    sendEvent(data);
+      case EVENTS.BID_RESPONSE:
+        queueBidResponse(args || {});
+        break;
+
+      case EVENTS.NO_BID:
+        queueNoBid(args || {});
+        break;
+
+      case EVENTS.BID_TIMEOUT:
+        queueBidTimeout(args || []);
+        break;
+
+      case EVENTS.AUCTION_END:
+        // Auction end is the batch boundary: queue a summary row, then flush
+        // everything accumulated since the last flush in a single request.
+        queueAuctionEnd(args || {});
+        flushBatchQueue();
+        break;
+
+      default:
+        break;
+    }
   }
 });
 
@@ -136,39 +92,29 @@ growthCodeAnalyticsAdapter.enableAnalytics = function(conf = {}) {
   growthCodeAnalyticsAdapter.originEnableAnalytics(conf);
 };
 
-function sendEvent(event) {
-  logInfo(MODULE_NAME + 'Analytics Event: ' + event);
-}
-
-function queueBidWon(bid) {
-  const eids = (bid.userIdAsEids || []).map(e => e.source);
-  const advertiserDomains = (bid.meta && Array.isArray(bid.meta.advertiserDomains))
-    ? bid.meta.advertiserDomains : [];
-
-  bidWonQueue.push({
-    _eids: eids,
-    timestamp: bid.responseTimestamp || Date.now(),
-    event: 'winningBid',
-    bidder: bid.bidderCode || '',
-    currency: bid.currency || '',
-    cpm: bid.cpm || 0,
-    auction_id: bid.auctionId || '',
-    ad_unit_code: bid.adUnitCode || '',
-    ad_id: bid.adId || '',
-    advertiser_domains: advertiserDomains
+function pushRow(queue, row) {
+  queue.push({
+    _eids: row._eids || [],
+    timestamp: row.timestamp || Date.now(),
+    event: row.event,
+    bidder: row.bidder || '',
+    currency: row.currency || '',
+    cpm: row.cpm || 0,
+    auction_id: row.auction_id || '',
+    ad_unit_code: row.ad_unit_code || '',
+    ad_id: row.ad_id || '',
+    advertiser_domains: row.advertiser_domains || []
   });
-
-  logBidWonToServer();
 }
 
-function logBidWonToServer() {
-  if (pid === DEFAULT_PID || bidWonQueue.length === 0) return;
-
+// Shared by the immediate bidWon send and the batched auctionEnd send: both
+// send the same AnalyticsPayload shape, just with a different set of rows.
+function sendPayload(queue) {
   const gcid = storage.getDataFromLocalStorage('gcid') || '';
-  if (!gcid) return;
+  if (pid === DEFAULT_PID || queue.length === 0 || !gcid) return false;
 
-  const allEids = [...new Set(bidWonQueue.flatMap(e => e._eids))];
-  const events = bidWonQueue.map(({ _eids, ...entry }) => entry);
+  const allEids = [...new Set(queue.flatMap(e => e._eids))];
+  const events = queue.map(({ _eids, ...entry }) => entry);
 
   const payload = {
     bucket_id: storage.getDataFromLocalStorage('gcABbucket') || '',
@@ -195,7 +141,94 @@ function logBidWonToServer() {
     error: (err) => logInfo(MODULE_NAME + ': analytics error: ' + err)
   }, JSON.stringify(payload), { method: 'POST', withCredentials: true });
 
-  bidWonQueue = [];
+  return true;
+}
+
+function queueBidWon(bid) {
+  const advertiserDomains = (bid.meta && Array.isArray(bid.meta.advertiserDomains))
+    ? bid.meta.advertiserDomains : [];
+
+  pushRow(bidWonQueue, {
+    _eids: (bid.userIdAsEids || []).map(e => e.source),
+    timestamp: bid.responseTimestamp || Date.now(),
+    event: 'winningBid',
+    bidder: bid.bidderCode || '',
+    currency: bid.currency || '',
+    cpm: bid.cpm || 0,
+    auction_id: bid.auctionId || '',
+    ad_unit_code: bid.adUnitCode || '',
+    ad_id: bid.adId || '',
+    advertiser_domains: advertiserDomains
+  });
+
+  if (sendPayload(bidWonQueue)) bidWonQueue = [];
+}
+
+// bidRequested carries one bidder request with multiple bids (one per ad
+// unit) -- queue one row per bid, all folded into the single auctionEnd batch
+// request rather than sent individually.
+function queueBidRequested(bidderRequest) {
+  const bids = bidderRequest.bids || [];
+  bids.forEach(bid => {
+    pushRow(batchQueue, {
+      event: 'bidRequested',
+      bidder: bid.bidder || bidderRequest.bidderCode || '',
+      auction_id: bidderRequest.auctionId || '',
+      ad_unit_code: bid.adUnitCode || ''
+    });
+  });
+}
+
+function queueBidResponse(bid) {
+  const advertiserDomains = (bid.meta && Array.isArray(bid.meta.advertiserDomains))
+    ? bid.meta.advertiserDomains : [];
+
+  pushRow(batchQueue, {
+    _eids: (bid.userIdAsEids || []).map(e => e.source),
+    event: 'bidResponse',
+    bidder: bid.bidderCode || '',
+    currency: bid.currency || '',
+    cpm: bid.cpm || 0,
+    auction_id: bid.auctionId || '',
+    ad_unit_code: bid.adUnitCode || '',
+    ad_id: bid.adId || '',
+    advertiser_domains: advertiserDomains
+  });
+}
+
+function queueNoBid(bid) {
+  pushRow(batchQueue, {
+    event: 'noBid',
+    bidder: bid.bidderCode || '',
+    auction_id: bid.auctionId || '',
+    ad_unit_code: bid.adUnitCode || ''
+  });
+}
+
+// bidTimeout carries an array of timed-out bidder/ad-unit entries directly
+// (not wrapped in an object) -- queue one row per entry.
+function queueBidTimeout(timedOutBids) {
+  (timedOutBids || []).forEach(bid => {
+    pushRow(batchQueue, {
+      event: 'bidTimeout',
+      bidder: bid.bidder || '',
+      auction_id: bid.auctionId || '',
+      ad_unit_code: bid.adUnitCode || ''
+    });
+  });
+}
+
+// auctionEnd is an auction-level summary, not a per-bidder event -- the
+// backend schema has no per-event field for it beyond a marker row.
+function queueAuctionEnd(auction) {
+  pushRow(batchQueue, {
+    event: 'auctionEnd',
+    auction_id: auction.auctionId || ''
+  });
+}
+
+function flushBatchQueue() {
+  if (sendPayload(batchQueue)) batchQueue = [];
 }
 
 adapterManager.registerAnalyticsAdapter({
