@@ -23,10 +23,9 @@ import { expect } from 'chai';
 import { deepClone } from '../../src/utils.js';
 import { IMAGE as ortbNativeRequest } from 'src/native.js';
 import { PrebidServer } from '../../modules/prebidServerBidAdapter/index.js';
-import { setConfig as setCurrencyConfig } from '../../modules/currency.js';
 
 import { setDocumentHidden } from './unit/utils/focusTimeout_spec.js';
-import { sandbox } from 'sinon';
+
 import { getEffectiveMinBidCacheTTL, getMinBidCacheTTL, getMinTargetedBidCacheTTL, onMinBidCacheTTLChange } from '../../src/bidTTL.js';
 import { getGlobal } from '../../src/prebidGlobal.js';
 
@@ -160,7 +159,6 @@ function mockBidder(bidderCode, bids) {
 }
 
 const TEST_BIDS = [mockBid()];
-const TEST_BID_REQS = TEST_BIDS.map(mockBidRequest);
 
 function mockAjaxBuilder() {
   return function(url, callback) {
@@ -848,6 +846,95 @@ describe('auctionmanager.js', function () {
       expect(auction.getNonBids()[0]).to.equal('test');
     });
 
+    it('does not register a listener per auction', () => {
+      const q = () => (events.get()[EVENTS.PBS_ANALYTICS]?.que ?? []).length;
+      const before = q();
+      auctionManager.createAuction({ adUnits });
+      auctionManager.createAuction({ adUnits });
+      expect(q()).to.equal(before);
+    });
+
+    it('adds nonbids emitted after the auction cache is cleared mid-flight', () => {
+      const auction = auctionManager.createAuction({ adUnits });
+      auctionManager.clearAllAuctions();
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: auction.getAuctionId(),
+        seatnonbid: ['test']
+      });
+      expect(auction.getNonBids()).to.eql(['test']);
+    });
+
+    it('adds nonbids emitted after the auction ends while it is still retained', async () => {
+      const auction = auctionManager.createAuction({ adUnits });
+      auction.callBids();
+      await auction.end;
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: auction.getAuctionId(),
+        seatnonbid: ['late']
+      });
+      expect(auction.getNonBids()).to.eql(['late']);
+    });
+
+    it('ignores PBS_ANALYTICS events naming an unknown auction, without throwing', () => {
+      const auction = auctionManager.createAuction({ adUnits });
+      expect(() => {
+        events.emit(EVENTS.PBS_ANALYTICS, {
+          auctionId: 'no-such-auction',
+          seatnonbid: ['test']
+        });
+      }).to.not.throw();
+      expect(auction.getNonBids()).to.eql([]);
+    });
+
+    it('does not add nonbids when seatnonbid is null or absent', () => {
+      const auction = auctionManager.createAuction({ adUnits });
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: auction.getAuctionId()
+      });
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: auction.getAuctionId(),
+        seatnonbid: null
+      });
+      expect(auction.getNonBids()).to.eql([]);
+    });
+
+    it('routes nonbids to the auction they belong to when multiple auctions are live', () => {
+      const auction1 = auctionManager.createAuction({ adUnits });
+      const auction2 = auctionManager.createAuction({ adUnits });
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: auction2.getAuctionId(),
+        seatnonbid: ['nonbid2']
+      });
+      expect(auction1.getNonBids()).to.eql([]);
+      expect(auction2.getNonBids()).to.eql(['nonbid2']);
+    });
+
+    it('routes nonbids to every live auction sharing the same auctionId', () => {
+      const auction1 = auctionManager.createAuction({ adUnits, auctionId: 'shared-auction-id' });
+      const auction2 = auctionManager.createAuction({ adUnits, auctionId: 'shared-auction-id' });
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: 'shared-auction-id',
+        seatnonbid: ['nonbid']
+      });
+      expect(auction1.getNonBids()).to.eql(['nonbid']);
+      expect(auction2.getNonBids()).to.eql(['nonbid']);
+    });
+
+    it('routes nonbids to every ended-but-retained auction sharing an auctionId', async () => {
+      const auction1 = auctionManager.createAuction({ adUnits, auctionId: 'shared-auction-id' });
+      const auction2 = auctionManager.createAuction({ adUnits, auctionId: 'shared-auction-id' });
+      auction1.callBids();
+      auction2.callBids();
+      await auction1.end;
+      await auction2.end;
+      events.emit(EVENTS.PBS_ANALYTICS, {
+        auctionId: 'shared-auction-id',
+        seatnonbid: ['late']
+      });
+      expect(auction1.getNonBids()).to.eql(['late']);
+      expect(auction2.getNonBids()).to.eql(['late']);
+    });
+
     it('resolves .requestsDone', async () => {
       const auction = auctionManager.createAuction({ adUnits });
       stubCallAdapters.resetHistory();
@@ -942,6 +1029,37 @@ describe('auctionmanager.js', function () {
           await clock.tick(0);
           await clock.tick(20 * 1000);
           expect(auctionManager.getBidsReceived().length).to.equal(1);
+        });
+
+        it('pick up updates to minBidCacheTTL on every live auction', async () => {
+          const auction2 = auctionManager.createAuction({ adUnits });
+          indexAuctions.push(auction2);
+          auction.callBids();
+          auction2.callBids();
+          await auction.end;
+          await auction2.end;
+          clock.tick(10 * 1000);
+          expect(auctionManager.getBidsReceived().length).to.equal(4);
+          config.setConfig({
+            minBidCacheTTL: 20
+          });
+          await clock.tick(0);
+          await clock.tick(20 * 1000);
+          // each auction had one ttl=10 bid (now stale) and one ttl=100 bid
+          expect(auctionManager.getBidsReceived().length).to.equal(2);
+        });
+
+        it('exposes refreshBidTTLs on the auction, and repeated calls retain the same bids as one', async () => {
+          config.setConfig({
+            minBidCacheTTL: 30
+          });
+          auction.callBids();
+          await auction.end;
+          expect(auction.refreshBidTTLs).to.be.a('function');
+          auction.refreshBidTTLs();
+          expect(auctionManager.getBidsReceived().length).to.equal(2);
+          auction.refreshBidTTLs();
+          expect(auctionManager.getBidsReceived().length).to.equal(2);
         });
 
         it('do not expire targeted bids when minTargetedBidCacheTTL is set', async () => {
@@ -1214,7 +1332,7 @@ describe('auctionmanager.js', function () {
           'on bid': () => bidderRequests[0].bids[0],
           'on mediatype': () => bidderRequests[0].bids[0].mediaTypes.banner,
         }).forEach(([t, getObj]) => {
-          let renderer, bid;
+          let renderer;
           beforeEach(() => {
             renderer = {
               url: 'renderer.js',
@@ -1244,6 +1362,29 @@ describe('auctionmanager.js', function () {
             delete renderer.url;
             expect(getBid().renderer.renderNow).to.be.true;
           });
+        });
+
+        // Regression: a bid can be accepted when its ad unit is no longer
+        // resolvable (e.g. the originating auction has expired out of the
+        // auctionManager TTL collection, or the bid carries an adUnitId that
+        // matches no held ad unit). getPreparedBidForAuction must not throw
+        // while reading the publisher-defined renderer off the (missing) ad unit.
+        it('does not throw when the bid has no matching ad unit', () => {
+          const index = {
+            getAdUnit: () => undefined,
+            getBidRequest: () => undefined,
+            getMediaTypes: () => undefined,
+          };
+          const bid = {
+            cpm: 1.0,
+            bidderCode: BIDDER_CODE,
+            mediaType: 'banner',
+          };
+          let prepared;
+          expect(() => {
+            prepared = auctionModule.getPreparedBidForAuction(bid, { index });
+          }).to.not.throw();
+          expect(prepared.renderer).to.not.exist;
         });
       });
 
@@ -1413,8 +1554,9 @@ describe('auctionmanager.js', function () {
     describe('when auction timeout is 20', function () {
       let eventsEmitSpy, auctionDone, bidsBackCallback;
 
-      function respondToRequest(requestIndex) {
-        server.requests[requestIndex].respond(200, {}, 'response body');
+      function respondToRequest(discriminator) {
+        const request = typeof discriminator === 'function' ? server.requests.find(discriminator) : server.requests[discriminator];
+        request.respond(200, {}, 'response body');
       }
 
       function runAuction() {
@@ -1599,7 +1741,7 @@ describe('auctionmanager.js', function () {
             BIDDER_CODE1,
           ]);
         });
-        respondToRequest(1);
+        respondToRequest(request => request.url.includes('ib.adnxs.com/openrtb2/prebid'));
         return pm;
       });
 
@@ -2308,7 +2450,6 @@ describe('auctionmanager.js', function () {
           }
         });
 
-        const start = Date.now();
         auction = mockAuction(() => bidRequests);
         indexAuctions = [auction];
       });

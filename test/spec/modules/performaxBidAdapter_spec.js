@@ -4,6 +4,10 @@ import * as utils from '../../../src/utils.js';
 import sinon from 'sinon';
 
 describe('Performax adapter', function () {
+  it('declares the px alias with Performax\'s GVL ID', function () {
+    expect(spec.aliases).to.deep.equal([{ code: 'px', gvlid: 732 }]);
+  });
+
   const bids = [{
     bidder: 'performax',
     params: {
@@ -376,7 +380,7 @@ describe('Performax adapter', function () {
 
       expect(ajaxStub.calledOnce).to.be.true;
 
-      const [url, callback, data, options] = ajaxStub.firstCall.args;
+      const [, , data, options] = ajaxStub.firstCall.args;
       const parsedData = JSON.parse(data);
 
       expect(parsedData.type).to.equal('timeout');
@@ -390,7 +394,7 @@ describe('Performax adapter', function () {
 
       expect(ajaxStub.calledOnce).to.be.true;
 
-      const [url, callback, data] = ajaxStub.firstCall.args;
+      const [, , data] = ajaxStub.firstCall.args;
       const parsedData = JSON.parse(data);
 
       expect(parsedData.type).to.equal('bidderError');
@@ -409,7 +413,7 @@ describe('Performax adapter', function () {
       spec.onIntervention({ bid: bidData });
 
       expect(ajaxStub.calledOnce).to.be.true;
-      const [url, callback, data] = ajaxStub.firstCall.args;
+      const [, , data] = ajaxStub.firstCall.args;
       const parsed = JSON.parse(data);
 
       expect(parsed.type).to.equal('intervention');

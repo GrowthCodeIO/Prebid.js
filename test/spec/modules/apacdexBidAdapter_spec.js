@@ -262,6 +262,24 @@ describe('ApacdexBidAdapter', function () {
       expect(bidRequests.bidderRequests).to.eql(bidRequest);
     });
 
+    it('should populate device from bidderRequest.ortb2.device rather than reading navigator/window directly', function () {
+      const bidderRequestsWithDevice = Object.assign({}, bidderRequests, {
+        ortb2: {
+          device: {
+            ua: 'test-user-agent',
+            w: 1024,
+            h: 768,
+            language: 'en'
+          }
+        }
+      });
+      const bidRequests = spec.buildRequests(bidRequest, bidderRequestsWithDevice);
+      expect(bidRequests.data.device.ua).to.equal('test-user-agent');
+      expect(bidRequests.data.device.width).to.equal(1024);
+      expect(bidRequests.data.device.height).to.equal(768);
+      expect(bidRequests.data.device.language).to.equal('en');
+    });
+
     it('should return a properly formatted request with GDPR applies set to true', function () {
       const bidRequests = spec.buildRequests(bidRequest, bidderRequests);
       expect(bidRequests.url).to.equal('https://useast.quantumdex.io/auction/pbjs');
@@ -332,7 +350,7 @@ describe('ApacdexBidAdapter', function () {
     });
     it('should attach bidFloor param when either bid param floorPrice or getFloor function exists', function () {
       const getFloorResponse = { currency: 'USD', floor: 3 };
-      let singleBidRequest; let request; let payload = null;
+      let singleBidRequest; let request; let payload;
 
       // 1 -> floorPrice not defined, getFloor not defined > empty
       singleBidRequest = deepClone(bidRequest[0]);

@@ -16,7 +16,7 @@ import {
   setNativeResponseProperties, getNativeRenderingData,
   convertOrtbRequestToProprietaryNative, fromOrtbNativeRequest
 } from 'src/native.js';
-import { NATIVE_KEYS } from 'src/constants.js';
+
 import { stubAuctionIndex } from '../helpers/indexStub.js';
 import { auctionManager } from '../../src/auctionManager.js';
 import { getRenderingData } from '../../src/adRendering.js';
@@ -185,15 +185,13 @@ const bidWithUndefinedFields = {
 describe('native.js', function () {
   let sandbox;
   let triggerPixelStub;
+  let politeTriggerPixelStub;
   let insertHtmlIntoIframeStub;
-
-  function deps(adUnit) {
-    return { index: stubAuctionIndex({ adUnits: [adUnit] }) };
-  }
 
   beforeEach(function () {
     sandbox = sinon.createSandbox();
     triggerPixelStub = sandbox.stub(utils, 'triggerPixel');
+    politeTriggerPixelStub = sandbox.stub(utils, 'politeTriggerPixel');
     insertHtmlIntoIframeStub = sandbox.stub(utils, 'insertHtmlIntoIframe');
   });
 
@@ -203,8 +201,8 @@ describe('native.js', function () {
 
   it('fires impression trackers', function () {
     fireNativeTrackers({}, bid);
-    sinon.assert.calledOnce(triggerPixelStub);
-    sinon.assert.calledWith(triggerPixelStub, bid.native.impressionTrackers[0]);
+    sinon.assert.calledOnce(politeTriggerPixelStub);
+    sinon.assert.calledWith(politeTriggerPixelStub, bid.native.impressionTrackers[0]);
     sinon.assert.calledWith(
       insertHtmlIntoIframeStub,
       bid.native.javascriptTrackers

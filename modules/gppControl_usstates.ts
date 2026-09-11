@@ -49,7 +49,7 @@ export function normalizer({ nullify = [], move = {}, fn }: {
   move = Object.fromEntries(Object.entries(move).map(([k, map]) => [k,
     Object.fromEntries(Object.entries(map)
       .map(([k, v]) => [k, Array.isArray(v) ? v : [v]])
-      .map(([k, v]: [any, any]) => [--k, v.map(el => --el)])
+      .map(([k, v]: [any, any]) => [k - 1, v.map(el => el - 1)])
     )])
   );
   return function (cd) {
@@ -170,6 +170,10 @@ export const getSections = (() => {
 })();
 
 const handles = [];
+
+// re-exported so that the declaration below is part of a consumer's program: declaration emit
+// keeps this, but drops the value import above, whose bindings no type refers to
+export type { MSPAConfig } from '../libraries/mspa/activityControls.js';
 
 declare module '../libraries/mspa/activityControls' {
   interface MSPAConfig {

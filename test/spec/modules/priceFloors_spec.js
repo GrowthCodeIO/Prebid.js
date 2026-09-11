@@ -774,14 +774,8 @@ describe('the price floors module', function () {
         adUnits,
       });
     };
-    let actualAllowedFields = allowedFields;
-    let actualFieldMatchingFunctions = fieldMatchingFunctions;
-    const defaultAllowedFields = [...allowedFields];
-    const defaultMatchingFunctions = { ...fieldMatchingFunctions };
     afterEach(function() {
       exposedAdUnits = undefined;
-      actualAllowedFields = [...defaultAllowedFields];
-      actualFieldMatchingFunctions = { ...defaultMatchingFunctions };
     });
     it('should not do floor stuff if no resulting floor object can be resolved for auciton', function () {
       handleSetFloorsConfig({
@@ -1975,7 +1969,7 @@ describe('the price floors module', function () {
               },
               inverseBidAdjustment: function (bidCpm, bidRequest) {
                 // For the inverse we add up each mediaType in the request and divide by number of Mt's to get the inverse number
-                let factor = Object.keys(bidRequest.mediaTypes).reduce((sum, mediaType) => sum += mediaTypeFactors[mediaType], 0);
+                let factor = Object.keys(bidRequest.mediaTypes).reduce((sum, mediaType) => sum + mediaTypeFactors[mediaType], 0);
                 factor = factor / Object.keys(bidRequest.mediaTypes).length;
                 return bidCpm / factor;
               },
@@ -2294,6 +2288,17 @@ describe('the price floors module', function () {
       expect(reject.calledOnce).to.be.true;
       expect(returnedBidResponse).to.not.exist;
     });
+    it('does not enforce floorMin against a bid when the matching rule explicitly sets a null floor', function () {
+      _floorDataForAuction[AUCTION_ID] = utils.deepClone(basicFloorConfig);
+      // floorMin is a safety-net minimum; a null rule value means "no floor for this match" and should
+      // take precedence, exactly as it already does for getFloor() (see 'setting null as rule value' tests)
+      _floorDataForAuction[AUCTION_ID].data.floorMin = 5;
+      _floorDataForAuction[AUCTION_ID].data.values = { 'banner': null };
+      runBidResponse();
+      expect(reject.called).to.be.false;
+      expect(returnedBidResponse).to.exist;
+      expect(returnedBidResponse).to.not.haveOwnProperty('floorData');
+    });
     it('enforces floors for all bidders by default', function () {
       _floorDataForAuction[AUCTION_ID] = utils.deepClone(basicFloorConfig);
       _floorDataForAuction[AUCTION_ID].data.values = { 'banner': 1.0 };
@@ -2585,11 +2590,10 @@ describe('setting null as rule value', () => {
 
 describe('Price Floors User ID Tiers', function() {
   let sandbox;
-  let logErrorStub;
 
   beforeEach(function() {
     sandbox = sinon.createSandbox();
-    logErrorStub = sandbox.stub(utils, 'logError');
+    sandbox.stub(utils, 'logError');
   });
 
   afterEach(function() {

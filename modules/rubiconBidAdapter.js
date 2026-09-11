@@ -26,6 +26,8 @@ import { outstreamRenderer } from '../libraries/magniteUtils/outstream.js';
 
 /**
  * @typedef {import('../src/adapters/bidderFactory.js').BidRequest} BidRequest
+ * @typedef {import('./rubiconBidAdapter.d.ts').RubiconBidderParams} RubiconBidderParams
+ * @typedef {BidRequest & {params: RubiconBidderParams}} RubiconBidRequest
  */
 
 const DEFAULT_INTEGRATION = 'pbjs_lite';
@@ -259,7 +261,7 @@ export const spec = {
   gvlid: GVLID,
   supportedMediaTypes: [BANNER, VIDEO, NATIVE],
   /**
-   * @param {object} bid
+   * @param {RubiconBidRequest} bid
    * @return boolean
    */
   isBidRequestValid: function (bid) {
@@ -284,7 +286,7 @@ export const spec = {
     }
     const hasBannerOrNativeMediaType = [BANNER, NATIVE].filter(mediaType => bidFormats.includes(mediaType)).length > 0;
     if (!hasBannerOrNativeMediaType) return valid;
-    return valid && hasBannerOrNativeMediaType;
+    return valid;
   },
   /**
    * @param {BidRequest[]} bidRequests
@@ -293,12 +295,12 @@ export const spec = {
    */
   buildRequests: function (bidRequests, bidderRequest) {
     // separate video bids because the requests are structured differently
-    let requests = [];
+    let requests;
     const filteredHttpRequest = [];
     let filteredRequests;
 
     filteredRequests = bidRequests.filter(req => {
-      const mediaTypes = bidType(req) || [];
+      const mediaTypes = bidType(req);
       const { length } = mediaTypes;
       const { bidonmultiformat, video } = req.params || {};
 
@@ -327,7 +329,7 @@ export const spec = {
     }
 
     const bannerBidRequests = bidRequests.filter((req) => {
-      const mediaTypes = bidType(req) || [];
+      const mediaTypes = bidType(req);
       const { bidonmultiformat, video } = req.params || {};
       return (
         // Send to fastlane if: it must include BANNER and...
@@ -336,10 +338,8 @@ export const spec = {
           (mediaTypes.length === 1) ||
           // if bidonmultiformat is true
           bidonmultiformat ||
-          // if bidonmultiformat is false and there's no video parameter
-          (!bidonmultiformat && !video) ||
-          // if there's video parameter, but there's no video mediatype
-          (!bidonmultiformat && video && !mediaTypes.includes(VIDEO))
+          // if there's no video parameter, or there's video parameter but no video mediaType
+          !video || !mediaTypes.includes(VIDEO)
         )
       );
     });
@@ -370,7 +370,7 @@ export const spec = {
 
       // multiple requests are used if bids groups have more than 10 bids
       requests = filteredHttpRequest.concat(Object.keys(groupedBidRequests).reduce((aggregate, bidGroupKey) => {
-        // for each partioned bidGroup, append a bidRequest to requests list
+        // for each partitioned bidGroup, append a bidRequest to requests list
         partitionArray(groupedBidRequests[bidGroupKey], SRA_BID_LIMIT).forEach(bidsInGroup => {
           const combinedSlotParams = spec.combineSlotUrlParams(bidsInGroup.map(bidRequest => {
             return spec.createSlotParams(bidRequest, bidderRequest);
@@ -606,7 +606,7 @@ export const spec = {
 
     applyFPD(bidRequest, BANNER, data);
 
-    if (config.getConfig('coppa') === true) {
+    if (bidderRequest.ortb2?.regs?.coppa === 1) {
       data['coppa'] = 1;
     }
 
@@ -899,7 +899,7 @@ function applyFPD(bidRequest, mediaType, data) {
       if (key !== 'adserver') {
         addBannerData(impExtData[key], 'site', key);
       } else if (impExtData[key].name === 'gam') {
-        addBannerData(impExtData[key].adslot, name, key);
+        addBannerData(impExtData[key].adslot, 'site', key);
       }
     });
 
@@ -1156,7 +1156,7 @@ export function getPriceGranularity(config) {
 // Function to validate the required video params
 export function hasValidVideoParams(bid) {
   let isValid = true;
-  // incase future javascript changes the string represenation of the array or number classes!
+  // in case future javascript changes the string representation of the array or number classes!
   const arrayType = Object.prototype.toString.call([]);
   const numberType = Object.prototype.toString.call(0);
   // required params and their associated object type
