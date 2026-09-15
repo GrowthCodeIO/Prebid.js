@@ -339,11 +339,17 @@ describe('acxiomRealIdSystem', () => {
     describe('API call', () => {
       let ajaxBuilderStub;
 
+      beforeEach(() => {
+        // Clear any negative-cache marker so each test starts with a clean lookup.
+        storage.removeDataFromLocalStorage(`${STORAGE_NAME}_no_id_retry_after`);
+      });
+
       afterEach(() => {
         if (ajaxBuilderStub) {
           ajaxBuilderStub.restore();
           ajaxBuilderStub = null;
         }
+        storage.removeDataFromLocalStorage(`${STORAGE_NAME}_no_id_retry_after`);
       });
 
       it('should POST to the default API URL with partnerId and default sourceId in body', (done) => {
@@ -571,6 +577,111 @@ describe('acxiomRealIdSystem', () => {
 
         result.callback((id) => {
           expect(id).to.be.undefined;
+          done();
+        });
+      });
+    });
+    describe('negative cache (no-ID 7-day suppression)', () => {
+      const RETRY_KEY = `${STORAGE_NAME}_no_id_retry_after`;
+      let ajaxBuilderStub, getStub, setStub, removeStub;
+
+      beforeEach(() => {
+        sinon.stub(storage, 'localStorageIsEnabled').returns(true);
+        getStub = sinon.stub(storage, 'getDataFromLocalStorage').returns(null);
+        setStub = sinon.stub(storage, 'setDataInLocalStorage');
+        removeStub = sinon.stub(storage, 'removeDataFromLocalStorage');
+      });
+
+      afterEach(() => {
+        if (ajaxBuilderStub) { ajaxBuilderStub.restore(); ajaxBuilderStub = null; }
+        sinon.restore();
+      });
+
+      it('sets a future retry marker (default 7 days) when the API returns no ID', (done) => {
+        ajaxBuilderStub = sinon.stub(dep, 'ajaxBuilder').returns(
+          (url, callbacks) => callbacks.success(makeEmptyResponse())
+        );
+        const before = Date.now();
+        const result = acxiomRealIdSubmodule.getId(
+          { params: { partnerId: PARTNER_ID }, storage: { name: STORAGE_NAME } },
+          {}
+        );
+        result.callback((id) => {
+          expect(id).to.be.undefined;
+          expect(setStub.calledWith(RETRY_KEY)).to.be.true;
+          const ts = parseInt(setStub.getCall(0).args[1], 10);
+          const sevenDays = 7 * 24 * 60 * 60 * 1000;
+          // marker ~= now + 7 days (allow slack for execution time)
+          expect(ts).to.be.greaterThan(before + sevenDays - 5000);
+          expect(ts).to.be.lessThan(Date.now() + sevenDays + 5000);
+          done();
+        });
+      });
+
+      it('uses storage.expires (days) for the retry window when provided', (done) => {
+        ajaxBuilderStub = sinon.stub(dep, 'ajaxBuilder').returns(
+          (url, callbacks) => callbacks.success(makeEmptyResponse())
+        );
+        const before = Date.now();
+        const result = acxiomRealIdSubmodule.getId(
+          { params: { partnerId: PARTNER_ID }, storage: { name: STORAGE_NAME, expires: 2 } },
+          {}
+        );
+        result.callback(() => {
+          const ts = parseInt(setStub.getCall(0).args[1], 10);
+          const twoDays = 2 * 24 * 60 * 60 * 1000;
+          expect(ts).to.be.greaterThan(before + twoDays - 5000);
+          expect(ts).to.be.lessThan(Date.now() + twoDays + 5000);
+          done();
+        });
+      });
+
+      it('skips the API call when a fresh retry marker exists', () => {
+        getStub.withArgs(RETRY_KEY).returns(String(Date.now() + 60 * 1000));
+        ajaxBuilderStub = sinon.stub(dep, 'ajaxBuilder');
+        const result = acxiomRealIdSubmodule.getId(
+          { params: { partnerId: PARTNER_ID }, storage: { name: STORAGE_NAME } },
+          {}
+        );
+        expect(result).to.be.undefined;
+        expect(ajaxBuilderStub.called).to.be.false;
+      });
+
+      it('calls the API again once the retry marker has expired', () => {
+        getStub.withArgs(RETRY_KEY).returns(String(Date.now() - 1000));
+        const result = acxiomRealIdSubmodule.getId(
+          { params: { partnerId: PARTNER_ID }, storage: { name: STORAGE_NAME } },
+          {}
+        );
+        expect(result).to.have.property('callback');
+      });
+
+      it('clears the retry marker when an ID resolves', (done) => {
+        ajaxBuilderStub = sinon.stub(dep, 'ajaxBuilder').returns(
+          (url, callbacks) => callbacks.success(makeEidResponse(REAL_ID_TOKEN, 1))
+        );
+        const result = acxiomRealIdSubmodule.getId(
+          { params: { partnerId: PARTNER_ID }, storage: { name: STORAGE_NAME } },
+          {}
+        );
+        result.callback((id) => {
+          expect(id).to.deep.equal({ id: REAL_ID_TOKEN, atype: 1 });
+          expect(removeStub.calledWith(RETRY_KEY)).to.be.true;
+          done();
+        });
+      });
+
+      it('does NOT set a retry marker on API error', (done) => {
+        ajaxBuilderStub = sinon.stub(dep, 'ajaxBuilder').returns(
+          (url, callbacks) => callbacks.error('server error')
+        );
+        const result = acxiomRealIdSubmodule.getId(
+          { params: { partnerId: PARTNER_ID }, storage: { name: STORAGE_NAME } },
+          {}
+        );
+        result.callback((id) => {
+          expect(id).to.be.undefined;
+          expect(setStub.calledWith(RETRY_KEY)).to.be.false;
           done();
         });
       });

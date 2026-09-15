@@ -18,6 +18,12 @@ import type { AllConsentData } from '../src/consentHandler.ts';
 const MODULE_NAME = 'acxiomRealId' as const;
 const DEFAULT_API_URL = 'https://ids.api.gcprivacy.id/v1/eid/l';
 const DEFAULT_SOURCE_ID = 'acxiom.id';
+// When the lookup returns no ID, suppress further API calls for this long.
+// Defaults to 7 days; overridden by the submodule's `storage.expires` (in days) when set.
+const DEFAULT_NO_ID_CACHE_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// localStorage suffix holding the epoch-ms timestamp after which a retry is allowed.
+const NO_ID_RETRY_SUFFIX = '_no_id_retry_after';
 export const storage = getStorageManager({ moduleType: MODULE_TYPE_UID, moduleName: MODULE_NAME });
 export const dep = {
   ajaxBuilder
@@ -135,7 +141,7 @@ function deleteStoredToken(config: UserIdConfig<typeof MODULE_NAME>) {
   const storageName = config?.storage?.name || MODULE_NAME;
   const expired = new Date(0).toUTCString();
   if (storage.localStorageIsEnabled()) {
-    ['', '_exp', '_cst', '_last'].forEach(suffix => {
+    ['', '_exp', '_cst', '_last', NO_ID_RETRY_SUFFIX].forEach(suffix => {
       storage.removeDataFromLocalStorage(`${storageName}${suffix}`);
     });
   }
@@ -186,6 +192,21 @@ export const acxiomRealIdSubmodule: IdProviderSpec<typeof MODULE_NAME> = {
       return { id: storedId };
     }
 
+    // Negative cache: if a recent lookup returned no ID, skip the API call until
+    // the retry window has elapsed. The window is config.storage.expires (days)
+    // when set, otherwise DEFAULT_NO_ID_CACHE_DAYS (7).
+    const retryKey = `${config?.storage?.name || MODULE_NAME}${NO_ID_RETRY_SUFFIX}`;
+    const expiresDays = config?.storage?.expires;
+    const noIdCacheMs = (typeof expiresDays === 'number' && expiresDays > 0
+      ? expiresDays
+      : DEFAULT_NO_ID_CACHE_DAYS) * DAY_MS;
+    if (storage.localStorageIsEnabled()) {
+      const retryAfter = parseInt(storage.getDataFromLocalStorage(retryKey), 10);
+      if (!isNaN(retryAfter) && Date.now() < retryAfter) {
+        return undefined;
+      }
+    }
+
     const url = buildLookupUrl(apiUrl);
     const payload: Record<string, string> = {
       partnerId,
@@ -210,8 +231,15 @@ export const acxiomRealIdSubmodule: IdProviderSpec<typeof MODULE_NAME> = {
                 const eids = parsed?.user?.eids;
                 const uid = eids?.[0]?.uids?.[0];
                 if (uid?.id) {
+                  if (storage.localStorageIsEnabled()) {
+                    storage.removeDataFromLocalStorage(retryKey);
+                  }
                   cb({ id: uid.id, atype: uid.atype });
                 } else {
+                  // No ID resolved — suppress further calls for the cache window.
+                  if (storage.localStorageIsEnabled()) {
+                    storage.setDataInLocalStorage(retryKey, String(Date.now() + noIdCacheMs));
+                  }
                   cb(undefined);
                 }
               } catch (e) {
